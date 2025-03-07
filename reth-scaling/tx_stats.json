@@ -1,0 +1,15 @@
+{
+  "avg_latency_ms": 15,
+  "config": {
+    "batch_size": 50,
+    "concurrency": 50,
+    "target_tps": 3000,
+    "use_batching": true
+  },
+  "confirmed": 3000,
+  "failed": 0,
+  "submitted": 3000,
+  "timestamp": "2025-03-07T13:16:37.934573+00:00",
+  "total_time_ms": 1437,
+  "tps": 2086.7878265370723
+}

@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "account-seeder",
+    "reth-scaling",
+]
+
+# Optional: Set resolver version
+resolver = "2"
