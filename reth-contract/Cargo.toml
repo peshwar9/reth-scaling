@@ -1,0 +1,9 @@
+[package]
+name = "reth-contract"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dotenv = "0.15.0"
+ethers = "2.0.14"
+tokio = "1.44.0"
