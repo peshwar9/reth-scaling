@@ -25,7 +25,7 @@ use tokio::time;
 #[clap(author, version, about, long_about = None)]
 struct Args {
     /// RPC endpoint URL
-    #[clap(short = 'u', long, default_value = "http://localhost:8545")]
+    #[clap(short = 'u', long, default_value = "http://57.128.116.154:8545")]
     rpc_url: String,
 
     /// Number of accounts to generate and seed

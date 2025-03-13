@@ -1,0 +1,11 @@
+[package]
+name = "utils"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+secp256k1 = "0.24"
+ethereum-types = "0.12"
+hex = "0.4"
+tiny-keccak = {version = "2.0.2", features = ["keccak"]}
+
