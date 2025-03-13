@@ -1,46 +1,14 @@
 {
   "receivers": [
     {
-      "address": "0c7b26324acbf55a541a020d2312ef0c6557a2d0",
-      "private_key": "d09fbd5e138ab5343237c24a93fa9348c33ca1fe9b629ea5ce810461eae3e35d"
-    },
-    {
-      "address": "fdc1af1e7968004bad43530bcd33103cecf844c5",
-      "private_key": "a562c1aca7c3961c220b89793c8c0a2e8bc5b2468fd616eb7093a399629a0f74"
-    },
-    {
-      "address": "49381c8ef72cb38fc0663585ed4aa52562bcfc8e",
-      "private_key": "d495e44429e0e33c3b6c1f52051a3e86aba8bfd2d6e6fc51327c73cd431a4e1f"
-    },
-    {
-      "address": "e1c51300e02c230f9c2fcb8625d9d9d180b2c65f",
-      "private_key": "3fed23e849f0fbaffcd03813ac030970fa5abce739ef09d1de59ce6de65608ef"
-    },
-    {
-      "address": "dbdd9267f0be35b365880faff31d7017d3fab33e",
-      "private_key": "c228a60a9f86cbab2cf21eda9194029dc581fbc4957296866c952ca7186aaffb"
+      "address": "fba0e695cf16ac12be13962bcfc9413ef20f6111",
+      "private_key": "42e5af916001080256c01d5929f0b37778683972cfd94cddf83eb9c328a2f538"
     }
   ],
   "senders": [
     {
-      "address": "3f843aabf59e4168b44082d00dcd556c49910ee1",
-      "private_key": "cd2fcd82e0e0f84ead3de23fbac788ecead401e30e4fb8ab2497178b9e19cb80"
-    },
-    {
-      "address": "bcad869ddf6bbeb23e93e68ecd4fc516f66b1994",
-      "private_key": "1ef0c10bd8122c8bd48da5351258f19cd6542ddbbca500271a596955b5d1dcf8"
-    },
-    {
-      "address": "9c17691277c8e209f7050387e8bbb703e0c8f2e1",
-      "private_key": "e0937388fcafb2f9532fe328bf33118a0ae466dd60b080775bea047d0ade65cc"
-    },
-    {
-      "address": "b206ac84b5b3c260a23d810c2f49b3bb86a04b46",
-      "private_key": "4efafbca52c7fe393a1867dc2082acc9a6a3f96dd47ab2b106954e7227872ea7"
-    },
-    {
-      "address": "27a6def17ad246d71d04f19720e22a35564bf9e8",
-      "private_key": "1d82e11c5833f4dbe83fbbd0d3bbd6a1757f1d0e12626903fbf2f89c6de596d8"
+      "address": "bbca02535e62261ffe43512e3b549772d6b76e8d",
+      "private_key": "f89f6e2c6e285ce0c54c371b6738c7cb7645f8acab0060a78a7fcebb4b658e59"
     }
   ]
 }

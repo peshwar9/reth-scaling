@@ -2739,6 +2739,7 @@ version = "0.1.0"
 dependencies = [
  "dotenv",
  "ethers",
+ "serde_json",
  "tokio",
 ]
 
@@ -3758,9 +3759,11 @@ name = "utils"
 version = "0.1.0"
 dependencies = [
  "ethereum-types 0.12.1",
+ "ethers",
  "hex",
  "secp256k1",
  "tiny-keccak",
+ "tokio",
 ]
 
 [[package]]
