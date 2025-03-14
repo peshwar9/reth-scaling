@@ -32,10 +32,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create a transaction request
     let tx = TransactionRequest::new()
-        .to("0x608Bf7a39D943263c28417a6Cb966E9b269bD90F") // Replace with the recipient address
-        .value(U256::from_dec_str("100000000000000000000").unwrap()) // Value in wei (10 ETH)
-        .gas_price(U256::from(1200000000)) // Gas price
-        .gas(U256::from(21000)); // Gas limit
+        .to("0xb206ac84b5b3c260a23d810c2f49b3bb86a04b46") // Replace with the recipient address
+        .value(U256::from_dec_str("200000000000000000000").unwrap()) // Value in wei (10 ETH)
+        // .gas_price(U256::from(1200000000)) // Gas price for non rootvx servers
+         .gas_price(U256::from(0)) // Gas price = 0 for root vx nodes
+        .gas(U256::from(21000)) // Gas limit
+        .chain_id(chain_id.as_u64());
 
     // Send the transaction
     let pending_tx = client.send_transaction(tx, None).await?;
