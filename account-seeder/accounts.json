@@ -1,14 +1,14 @@
 {
   "receivers": [
     {
-      "address": "fba0e695cf16ac12be13962bcfc9413ef20f6111",
-      "private_key": "42e5af916001080256c01d5929f0b37778683972cfd94cddf83eb9c328a2f538"
+      "address": "2720336fd66e91ab31ce94965e74eec514c380fc",
+      "private_key": "cae786fa0355066772067c6d398ef5117ec06c8ab28754eee493f35b744b26b1"
     }
   ],
   "senders": [
     {
-      "address": "bbca02535e62261ffe43512e3b549772d6b76e8d",
-      "private_key": "f89f6e2c6e285ce0c54c371b6738c7cb7645f8acab0060a78a7fcebb4b658e59"
+      "address": "56dd6d5e5140e119a549be2be631a0184514fafd",
+      "private_key": "f07b8524d0db4c97a837ced11f38650d939d25874e96cad44f45616e3a39edf4"
     }
   ]
 }

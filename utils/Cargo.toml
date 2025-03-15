@@ -10,3 +10,6 @@ hex = "0.4"
 tiny-keccak = {version = "2.0.2", features = ["keccak"]}
 ethers = { version = "2.0", features = ["legacy"] }
 tokio = { version = "1", features = ["full"] }
+rand = "0.8"
+clap = { version = "4.0", features = ["derive"] }
+k256 = "0.13.4"
