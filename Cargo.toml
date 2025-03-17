@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "account-seeder", "reth-contract",
+    "account-seeder", "dynamic-scaling", "reth-contract",
     "reth-scaling", "utils",
 ]
 
