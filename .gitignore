@@ -10,6 +10,9 @@
 *.swp
 *.swo
 
+# Env file
+dynamic-scaling/.env
+
 # Accounts.json
 **/accounts.json
 accounts.json``

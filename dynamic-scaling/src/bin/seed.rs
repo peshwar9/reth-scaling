@@ -4,9 +4,12 @@ use ethers::{
     types::{Address, U256},
 };
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::{fs, sync::Arc};
 use tokio::time::Instant;
+use std::path::Path;
+use dotenv::dotenv;
+use std::env;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -23,6 +26,12 @@ enum Commands {
         #[arg(short, long)]
         num_accounts: usize,
     },
+    Prepare {
+        #[arg(long)]
+        num_accounts: usize,
+        #[arg(long)]
+        num_nodes: usize,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -31,20 +40,26 @@ struct Account {
     address: String,
 }
 
-#[tokio::main]
-async fn main() -> eyre::Result<()> {
+fn main() {
+    // Load .env file at the start of the program
+    dotenv().ok();
+    
     let cli = Cli::parse();
 
-    match &cli.command {
+    match cli.command {
         Commands::Balances { num_accounts } => {
-            get_balances(*num_accounts).await?;
+            // Get RPC URL from environment
+            let rpc_url = env::var("ETH_RPC_URL")
+                .expect("ETH_RPC_URL must be set in .env file");
+            check_balances(num_accounts, &rpc_url);
+        }
+        Commands::Prepare { num_accounts, num_nodes } => {
+            prepare_node_accounts(num_accounts, num_nodes);
         }
     }
-
-    Ok(())
 }
 
-async fn get_balances(num_accounts: usize) -> eyre::Result<()> {
+async fn get_balances(num_accounts: usize, rpc_url: &str) -> eyre::Result<()> {
     // Read and parse accounts.json
     let accounts_json = fs::read_to_string("../accounts.json")?;
     let accounts: Vec<Account> = serde_json::from_str(&accounts_json)?;
@@ -53,9 +68,7 @@ async fn get_balances(num_accounts: usize) -> eyre::Result<()> {
     let accounts = accounts.into_iter().take(num_accounts).collect::<Vec<_>>();
 
     // Connect to Ethereum network
-    let provider = Provider::<Http>::try_from(
-        std::env::var("ETH_RPC_URL").unwrap_or_else(|_| "http://127.0.0.1:8545".to_string()),
-    )?;
+    let provider = Provider::<Http>::try_from(rpc_url.to_string())?;
     let client = Arc::new(provider);
 
     let start_time = Instant::now();
@@ -107,4 +120,60 @@ async fn get_balances(num_accounts: usize) -> eyre::Result<()> {
 fn format_eth(wei: U256) -> String {
     let eth = wei.as_u128() as f64 / 1e18;
     format!("{:.6}", eth)
+}
+
+fn prepare_node_accounts(accounts_per_node: usize, num_nodes: usize) {
+    // Read the accounts.json file
+    let accounts_file = fs::read_to_string("../accounts.json")
+        .expect("Failed to read accounts.json");
+    let accounts: Value = serde_json::from_str(&accounts_file)
+        .expect("Failed to parse accounts.json");
+
+    let accounts_array = accounts.as_array()
+        .expect("Accounts should be an array");
+
+    // Calculate total accounts needed
+    let total_accounts_needed = accounts_per_node * 2 * num_nodes;
+    if accounts_array.len() < total_accounts_needed {
+        panic!("Not enough accounts in accounts.json. Need {} accounts but found {}", 
+            total_accounts_needed, accounts_array.len());
+    }
+
+    // Create node files
+    for node_idx in 0..num_nodes {
+        let start_idx = node_idx * accounts_per_node * 2;
+        
+        // Get sender accounts
+        let senders: Vec<Value> = accounts_array[start_idx..start_idx + accounts_per_node]
+            .to_vec();
+        
+        // Get receiver accounts
+        let receivers: Vec<Value> = accounts_array[start_idx + accounts_per_node..start_idx + accounts_per_node * 2]
+            .to_vec();
+
+        // Create node configuration
+        let node_config = json!({
+            "senders": senders,
+            "receivers": receivers
+        });
+
+        // Write to file
+        let filename = format!("node-{}.json", node_idx + 1);
+        fs::write(
+            &filename,
+            serde_json::to_string_pretty(&node_config).unwrap()
+        ).expect(&format!("Failed to write {}", filename));
+
+        println!("Created {}", filename);
+    }
+}
+
+fn check_balances(num_accounts: usize, rpc_url: &str) {
+    // Create a tokio runtime and run the async function
+    let runtime = tokio::runtime::Runtime::new()
+        .expect("Failed to create Tokio runtime");
+    
+    if let Err(err) = runtime.block_on(get_balances(num_accounts, rpc_url)) {
+        eprintln!("Error checking balances: {}", err);
+    }
 }
