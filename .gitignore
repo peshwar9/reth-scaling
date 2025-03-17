@@ -11,7 +11,8 @@
 *.swo
 
 # Accounts.json
-accounts.json
+**/accounts.json
+accounts.json``
 
 # Optional: ignore Cargo.lock at workspace root level
 # /Cargo.lock
