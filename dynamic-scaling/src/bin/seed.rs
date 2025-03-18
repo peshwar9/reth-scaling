@@ -57,6 +57,18 @@ enum Commands {
         #[arg(long)]
         amount_wei: U256,
     },
+    /// Fund sender accounts of a specific node
+    FundNode {
+        #[arg(long)]
+        node: usize,
+        #[arg(long)]
+        amount_eth: f64,
+    },
+    /// Get balances of all sender accounts for a specific node
+    NodeBalances {
+        #[arg(long)]
+        node: usize,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -103,6 +115,22 @@ fn main() {
             
             if let Err(err) = runtime.block_on(send_eth_crosschain(num_nodes, num_accounts, amount_wei)) {
                 eprintln!("Error sending cross-chain ETH: {}", err);
+            }
+        }
+        Commands::FundNode { node, amount_eth } => {
+            let runtime = tokio::runtime::Runtime::new()
+                .expect("Failed to create Tokio runtime");
+            
+            if let Err(err) = runtime.block_on(fund_node(node, amount_eth)) {
+                eprintln!("Error funding node {}: {}", node, err);
+            }
+        }
+        Commands::NodeBalances { node } => {
+            let runtime = tokio::runtime::Runtime::new()
+                .expect("Failed to create Tokio runtime");
+            
+            if let Err(err) = runtime.block_on(check_node_balances(node)) {
+                eprintln!("Error checking balances for node {}: {}", node, err);
             }
         }
     }
@@ -546,9 +574,9 @@ async fn send_eth_crosschain(num_nodes: usize, num_accounts: usize, amount_wei: 
 
                     // Check balances before transfer
                     let sender_balance = client.get_balance(sender_wallet.address(), None).await?;
-                    let gas_price = client.get_gas_price().await?;
-                    let gas_limit = U256::from(50_000); // Gas limit for contract interaction
-                    let total_needed = gas_price * gas_limit + amount_wei;
+                    let gas_price = U256::zero();  // Since we're using zero gas price
+                    let gas_limit = U256::from(50_000);
+                    let total_needed = amount_wei;  // Only need to check against transfer amount since gas is free
                     
                     if sender_balance < total_needed {
                         println!("✗ Insufficient funds for cross-chain transfer!");
@@ -612,6 +640,130 @@ async fn send_eth_crosschain(num_nodes: usize, num_accounts: usize, amount_wei: 
     println!("Successful transfers: {}", total_transfers);
     println!("Failed transfers: {}", failed_transfers);
     println!("Time taken: {:?}", elapsed);
+
+    Ok(())
+}
+
+async fn fund_node(node: usize, amount_eth: f64) -> eyre::Result<()> {
+    // Convert ETH to wei
+    let amount_wei = U256::from((amount_eth * 1e18) as u64);
+    
+    // Get master wallet private key from .env
+    let master_key = env::var("MASTER_WALLET_KEY")
+        .expect("MASTER_WALLET_KEY must be set in .env file");
+    let master_wallet = master_key.parse::<LocalWallet>()
+        .expect("Invalid master wallet private key");
+
+    // Get node-specific RPC URL
+    let rpc_url = env::var(format!("NODE{}_RPC", node))
+        .map_err(|_| eyre::eyre!("NODE{}_RPC not set in .env", node))?;
+    
+    // Connect to network
+    let provider = Provider::<Http>::try_from(rpc_url.clone())?;
+    let client = Arc::new(provider);
+    let master_wallet = master_wallet.with_chain_id(client.get_chainid().await?.as_u64());
+
+    // Read node file
+    let filename = format!("node-{}.json", node);
+    let file_content = fs::read_to_string(&filename)?;
+    let node_data: Value = serde_json::from_str(&file_content)?;
+    let senders = node_data["senders"].as_array()
+        .ok_or_else(|| eyre::eyre!("No senders found in {}", filename))?;
+
+    println!("Starting to fund Node {} sender accounts...", node);
+    println!("Using RPC URL: {}", rpc_url);
+    println!("Amount per account: {} ETH ({} wei)", amount_eth, amount_wei);
+    let start_time = Instant::now();
+    let mut total_funded = 0;
+
+    // Get starting nonce
+    let mut current_nonce = client.get_transaction_count(
+        master_wallet.address(),
+        None
+    ).await?;
+
+    // Fund each sender account
+    for (idx, sender) in senders.iter().enumerate() {
+        let address = sender["address"].as_str()
+            .ok_or_else(|| eyre::eyre!("Invalid address format"))?;
+        let to_address: Address = address.parse()?;
+
+        println!("\nFunding sender account {} ({})...", idx + 1, address);
+
+        let tx = TransactionRequest::new()
+            .to(to_address)
+            .value(amount_wei)
+            .from(master_wallet.address())
+            .gas(21_000)
+            .nonce(current_nonce);
+
+        let typed_tx = TypedTransaction::Legacy(tx);
+        let signature = master_wallet.sign_transaction(&typed_tx).await?;
+        let signed_tx = typed_tx.rlp_signed(&signature);
+        
+        match client.send_raw_transaction(signed_tx).await {
+            Ok(tx_hash) => {
+                println!("✓ Transaction successful!");
+                println!("  Transaction hash: {}", tx_hash.tx_hash());
+                total_funded += 1;
+            }
+            Err(e) => {
+                println!("✗ Transaction failed!");
+                println!("  Error: {}", e);
+            }
+        }
+
+        current_nonce = current_nonce.checked_add(1.into())
+            .expect("Nonce overflow");
+    }
+
+    let elapsed = start_time.elapsed();
+    println!("\nFunding Summary:");
+    println!("Node: {}", node);
+    println!("Total accounts funded: {}", total_funded);
+    println!("Amount per account: {} ETH", amount_eth);
+    println!("Time taken: {:?}", elapsed);
+
+    Ok(())
+}
+
+async fn check_node_balances(node: usize) -> eyre::Result<()> {
+    // Get node-specific RPC URL
+    let rpc_url = env::var(format!("NODE{}_RPC", node))
+        .map_err(|_| eyre::eyre!("NODE{}_RPC not set in .env", node))?;
+    
+    // Connect to network
+    let provider = Provider::<Http>::try_from(rpc_url.clone())?;
+    let client = Arc::new(provider);
+
+    // Read node file
+    let filename = format!("node-{}.json", node);
+    let file_content = fs::read_to_string(&filename)?;
+    let node_data: Value = serde_json::from_str(&file_content)?;
+    let senders = node_data["senders"].as_array()
+        .ok_or_else(|| eyre::eyre!("No senders found in {}", filename))?;
+
+    println!("\nChecking balances for Node {} sender accounts...", node);
+    println!("Using RPC URL: {}", rpc_url);
+    
+    let chain_id = client.get_chainid().await?;
+    println!("Chain ID: {}", chain_id);
+
+    // Check balance for each sender account
+    for (idx, sender) in senders.iter().enumerate() {
+        let address = sender["address"].as_str()
+            .ok_or_else(|| eyre::eyre!("Invalid address format"))?;
+        let address: Address = address.parse()?;
+
+        let balance = client.get_balance(address, None).await?;
+        
+        println!("\nSender Account {}:", idx + 1);
+        println!("  Address: {}", address);
+        println!("  Balance: {} wei ({} ETH)", 
+            balance, 
+            format_eth(balance)
+        );
+    }
 
     Ok(())
 }
