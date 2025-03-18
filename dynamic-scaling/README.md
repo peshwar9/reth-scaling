@@ -10,5 +10,6 @@ cargo run --bin seed prepare --num-accounts 5 --num-nodes 3
 
 // Fund accounts
 cargo run --bin seed fund --num-nodes 3 --num-accounts 5 --amount-wei 1
-// Run the nodes
-cargo run --bin main
+
+// Defund accounts
+cargo run --bin seed defund --num-nodes 3 --num-accounts 5
