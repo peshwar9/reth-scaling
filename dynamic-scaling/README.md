@@ -20,6 +20,13 @@ cargo run --bin seed send-eth --num-nodes 2 --num-accounts 2 --amount-wei 1
 
 
 
+Sequence of steps:
+1. Prepare accounts
+2. Fund Node
+3. Check balances
+4. Send eth cross-chain
+5. Defund Node
+
 The .env file should contain the following variables:
 
 ETH_RPC_URL=http://34.21.80.98:8845
