@@ -11,8 +11,8 @@ use eyre::Result;
 #[tokio::main]
 async fn main() -> Result<()> {
     // 1. Hardcoded inputs
-    let rpc_url = "http://34.48.132.251:8845";  // Example RPC URL
-    let contract_address = "0xb6db674c6d1861124bb4f6cb23de3ba92eea8347";  // Example contract address
+    let rpc_url = "http://34.21.80.98:8845";  // Example RPC URL
+    let contract_address = "0xe1cb87e107b1727422f01a98428eb58c2cd3a53d";  // Example contract address
 
     println!("Verifying contract deployment...");
     println!("RPC URL: {}", rpc_url);
@@ -22,8 +22,31 @@ async fn main() -> Result<()> {
     let provider = Provider::<Http>::try_from(rpc_url)?;
     let client = Arc::new(provider);
     
+    // Get chain ID first
+    let chain_id = client.get_chainid().await?;
+    println!("Network Chain ID: {}", chain_id);
+    
     let address: H160 = contract_address.parse()?;
     let deployed_code = client.get_code(address, None).await?;
+
+    if deployed_code.is_empty() {
+        println!("\n❌ No code found at address: {}", contract_address);
+        println!("This could mean:");
+        println!("1. The contract is not deployed at this address");
+        println!("2. You're connecting to the wrong network (Chain ID: {})", chain_id);
+        println!("3. The deployment transaction hasn't been mined yet");
+        
+        // Try to get the transaction count at this address
+        if let Ok(nonce) = client.get_transaction_count(address, None).await {
+            println!("\nTransaction count at address: {}", nonce);
+            if nonce == U256::zero() {
+                println!("This address has never been used.");
+            }
+        }
+        return Ok(());
+    }
+
+    println!("\n✅ Code found at address!");
     
     // 3. Get local compiled bytecode
     let contract_json: Value = serde_json::from_slice(
