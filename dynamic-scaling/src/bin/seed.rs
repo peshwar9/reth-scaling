@@ -20,33 +20,16 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Get balances of first N accounts
-    Balances {
-        /// Number of accounts to check
-        #[arg(short, long)]
-        num_accounts: usize,
-    },
     Prepare {
         #[arg(long)]
         num_accounts: usize,
         #[arg(long)]
         num_nodes: usize,
     },
-    /// Fund sender accounts across all nodes
-    Fund {
+    /// Defund all accounts in a specific node back to master wallet
+    DefundNode {
         #[arg(long)]
-        num_nodes: usize,
-        #[arg(long)]
-        num_accounts: usize,
-        #[arg(long)]
-        amount_wei: U256,
-    },
-    /// Defund all accounts (senders and receivers) across all nodes back to master wallet
-    Defund {
-        #[arg(long)]
-        num_nodes: usize,
-        #[arg(long)]
-        num_accounts: usize,
+        node: usize,
     },
     /// Send ETH cross-chain between nodes
     SendEth {
@@ -78,35 +61,19 @@ struct Account {
 }
 
 fn main() {
-    // Load .env file at the start of the program
     dotenv().ok();
-    
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Balances { num_accounts } => {
-            // Get RPC URL from environment
-            let rpc_url = env::var("ETH_RPC_URL")
-                .expect("ETH_RPC_URL must be set in .env file");
-            check_balances(num_accounts, &rpc_url);
-        }
         Commands::Prepare { num_accounts, num_nodes } => {
             prepare_node_accounts(num_accounts, num_nodes);
         }
-        Commands::Fund { num_nodes, num_accounts, amount_wei } => {
+        Commands::DefundNode { node } => {
             let runtime = tokio::runtime::Runtime::new()
                 .expect("Failed to create Tokio runtime");
             
-            if let Err(err) = runtime.block_on(fund_accounts(num_nodes, num_accounts, amount_wei)) {
-                eprintln!("Error funding accounts: {}", err);
-            }
-        }
-        Commands::Defund { num_nodes, num_accounts } => {
-            let runtime = tokio::runtime::Runtime::new()
-                .expect("Failed to create Tokio runtime");
-            
-            if let Err(err) = runtime.block_on(defund_accounts(num_nodes, num_accounts)) {
-                eprintln!("Error defunding accounts: {}", err);
+            if let Err(err) = runtime.block_on(defund_node(node)) {
+                eprintln!("Error defunding node {}: {}", node, err);
             }
         }
         Commands::SendEth { num_nodes, num_accounts, amount_wei } => {
@@ -134,68 +101,6 @@ fn main() {
             }
         }
     }
-}
-
-async fn get_balances(num_accounts: usize, rpc_url: &str) -> eyre::Result<()> {
-    // Read and parse accounts.json
-    let accounts_json = fs::read_to_string("../accounts.json")?;
-    let accounts: Vec<Account> = serde_json::from_str(&accounts_json)?;
-
-    // Take only the first N accounts
-    let accounts = accounts.into_iter().take(num_accounts).collect::<Vec<_>>();
-
-    // Connect to Ethereum network
-    let provider = Provider::<Http>::try_from(rpc_url.to_string())?;
-    let client = Arc::new(provider);
-
-    let start_time = Instant::now();
-
-    // Convert addresses from string to Address type
-    let addresses: Vec<Address> = accounts
-        .iter()
-        .map(|acc| acc.address.parse())
-        .collect::<Result<_, _>>()?;
-
-    // Call `eth_getProof` for each address
-    let mut futures = Vec::new();
-    for addr in &addresses {
-        // Format address as proper hex string with "0x" prefix
-        let params = json!([format!("0x{:x}", addr), [], "latest"]);
-        futures.push(client.request("eth_getProof", params));
-    }
-
-    let responses: Vec<serde_json::Value> = futures::future::join_all(futures)
-        .await
-        .into_iter()
-        .collect::<Result<_, _>>()?;
-
-    // Extract balances from responses
-    let mut balances = Vec::new();
-    for (i, response) in responses.iter().enumerate() {
-        if let Some(balance) = response["balance"].as_str() {
-            let balance: U256 = balance.parse()?;
-            balances.push((addresses[i], balance));
-        }
-    }
-
-    let elapsed = start_time.elapsed();
-    println!("Fetched balances of {} accounts in {:?}", balances.len(), elapsed);
-
-    // Print all balances
-    for (addr, balance) in balances.iter() {
-        let addr_str = addr.to_string();
-        let shortened = format!("{}...{}", 
-            &addr_str[..6],  // First 6 chars
-            &addr_str[addr_str.len()-4..]  // Last 4 chars
-        );
-        
-        // Convert wei to ETH (1 ETH = 10^18 wei)
-        let eth = balance.as_u128() as f64 / 1e18;
-        
-        println!("Address: {} Balance: {} wei ({:.18} ETH)", shortened, balance, eth);
-    }
-
-    Ok(())
 }
 
 // Helper function to format Wei to ETH
@@ -250,209 +155,116 @@ fn prepare_node_accounts(accounts_per_node: usize, num_nodes: usize) {
     }
 }
 
-fn check_balances(num_accounts: usize, rpc_url: &str) {
-    // Create a tokio runtime and run the async function
-    let runtime = tokio::runtime::Runtime::new()
-        .expect("Failed to create Tokio runtime");
-    
-    if let Err(err) = runtime.block_on(get_balances(num_accounts, rpc_url)) {
-        eprintln!("Error checking balances: {}", err);
-    }
-}
-
-async fn fund_accounts(num_nodes: usize, num_accounts: usize, amount_wei: U256) -> eyre::Result<()> {
-    // ... existing validation code ...
-
-    // Get master wallet private key from .env
-    let master_key = env::var("MASTER_WALLET_KEY")
-        .expect("MASTER_WALLET_KEY must be set in .env file");
-    let master_wallet = master_key.parse::<LocalWallet>()
-        .expect("Invalid master wallet private key");
-
-    // Connect to Ethereum network
-    let rpc_url = env::var("ETH_RPC_URL")
-        .expect("ETH_RPC_URL must be set in .env file");
-    let provider = Provider::<Http>::try_from(rpc_url)?;
-    let client = Arc::new(provider);
-    let master_wallet = master_wallet.with_chain_id(client.get_chainid().await?.as_u64());
-
-
-    // Get the current nonce for the master wallet
-       let nonce = client.get_transaction_count(
-        master_wallet.address(),
-        None
-    ).await?;
-    
-    let mut current_nonce = nonce;
-
-    println!("Starting to fund accounts...");
-    let start_time = Instant::now();
-    let mut total_funded = 0;
-
-    // Fund sender accounts for each node
-    for node_idx in 1..=num_nodes {
-        let filename = format!("node-{}.json", node_idx);
-        let file_content = fs::read_to_string(&filename)?;
-        let node_data: Value = serde_json::from_str(&file_content)?;
-        let senders = node_data["senders"].as_array().unwrap();
-        
-        // Take only the first num_accounts senders
-        for sender in senders.iter().take(num_accounts) {
-            let address = sender["address"].as_str()
-                .ok_or_else(|| eyre::eyre!("Invalid address format"))?;
-            let to_address: Address = address.parse()?;
-
-            let tx = TransactionRequest::new()
-                .to(to_address)
-                .value(amount_wei)
-                .from(master_wallet.address())
-                .gas(21_000)  // Add minimum required gas
-                .nonce(current_nonce);  // Add the current nonce
-
-            
-
-            // Convert to TypedTransaction and sign
-            let typed_tx = TypedTransaction::Legacy(tx);
-            let signature = master_wallet.sign_transaction(&typed_tx).await?;
-            
-            // Combine transaction and signature
-            let signed_tx = typed_tx.rlp_signed(&signature);
-            
-            // Send the transaction
-            client.send_raw_transaction(signed_tx).await?;
-            current_nonce = current_nonce.checked_add(1.into())
-                .expect("Nonce overflow");  // Increment nonce using U256           
-            total_funded += 1;
-            println!("Funded account {} in node {}", address, node_idx);
-        }
-    }
-
-    let elapsed = start_time.elapsed();
-    println!("Successfully funded {} accounts with {} wei each in {:?}", 
-        total_funded, amount_wei, elapsed);
-
-    Ok(())
-}
-
-async fn defund_accounts(num_nodes: usize, num_accounts: usize) -> eyre::Result<()> {
-    // Validate node files exist and have correct number of accounts
-    for node_idx in 1..=num_nodes {
-        let filename = format!("node-{}.json", node_idx);
-        if !Path::new(&filename).exists() {
-            return Err(eyre::eyre!("Node file {} not found", filename));
-        }
-
-        let file_content = fs::read_to_string(&filename)?;
-        let node_data: Value = serde_json::from_str(&file_content)?;
-
-        // Validate sender accounts
-        let senders = node_data["senders"].as_array()
-            .ok_or_else(|| eyre::eyre!("Senders not found in {}", filename))?;
-        if senders.len() != num_accounts {
-            return Err(eyre::eyre!("Expected {} sender accounts in {}, found {}", 
-                num_accounts, filename, senders.len()));
-        }
-
-        // Validate receiver accounts
-        let receivers = node_data["receivers"].as_array()
-            .ok_or_else(|| eyre::eyre!("Receivers not found in {}", filename))?;
-        if receivers.len() != num_accounts {
-            return Err(eyre::eyre!("Expected {} receiver accounts in {}, found {}", 
-                num_accounts, filename, receivers.len()));
-        }
-    }
-
+async fn defund_node(node: usize) -> eyre::Result<()> {
     // Get master wallet address from .env
     let master_address = env::var("MASTER_WALLET_ADDRESS")
         .expect("MASTER_WALLET_ADDRESS must be set in .env file");
     let master_address: Address = master_address.parse()?;
 
-    // Connect to Ethereum network
-    let rpc_url = env::var("ETH_RPC_URL")
-        .expect("ETH_RPC_URL must be set in .env file");
-    let provider = Provider::<Http>::try_from(rpc_url)?;
+    // Get node-specific RPC URL
+    let rpc_url = env::var(format!("NODE{}_RPC", node))
+        .map_err(|_| eyre::eyre!("NODE{}_RPC not set in .env", node))?;
+    
+    // Connect to network
+    let provider = Provider::<Http>::try_from(rpc_url.clone())?;
     let client = Arc::new(provider);
 
-    println!("Starting to defund accounts...");
+    // Read node file
+    let filename = format!("node-{}.json", node);
+    let file_content = fs::read_to_string(&filename)?;
+    let node_data: Value = serde_json::from_str(&file_content)?;
+    
+    println!("Starting to defund Node {} accounts...", node);
+    println!("Using RPC URL: {}", rpc_url);
+    println!("Master wallet address: {}", master_address);
+    
     let start_time = Instant::now();
     let mut total_defunded = 0;
+    let mut total_failed = 0;
 
-    // Helper function to process accounts
-    async fn process_accounts(accounts: &[Value], node_idx: usize, master_address: Address, 
-        client: &Arc<Provider<Http>>, account_type: &str) -> eyre::Result<usize> {
-        let mut defunded = 0;
+    // Process both senders and receivers
+    for account_type in ["senders", "receivers"] {
+        let accounts = node_data[account_type].as_array()
+            .ok_or_else(|| eyre::eyre!("{} not found in {}", account_type, filename))?;
+
+        println!("\nProcessing {} accounts...", account_type);
         
-        for account in accounts {
+        for (idx, account) in accounts.iter().enumerate() {
             let private_key = account["private_key"].as_str()
                 .ok_or_else(|| eyre::eyre!("Invalid private key format"))?;
             let wallet = private_key.parse::<LocalWallet>()?;
             let wallet = wallet.with_chain_id(client.get_chainid().await?.as_u64());
-
-            // Get current balance and gas costs
-            let balance = client.get_balance(wallet.address(), None).await?;
-            let gas_price = client.get_gas_price().await?;
-            let gas_cost = gas_price * U256::from(21_000);
-
-            // Convert to ETH (divide by 10^18)
-            let balance_eth = balance.as_u128() as f64 / 1_000_000_000_000_000_000.0;
-            let gas_cost_eth = gas_cost.as_u128() as f64 / 1_000_000_000_000_000_000.0;
-
-            println!("\nAccount {} ({})", wallet.address(), account_type);
-            println!("  Current balance: {} wei ({:.6} ETH)", balance, balance_eth);
-            println!("  Gas cost: {} wei ({:.6} ETH)", gas_cost, gas_cost_eth);
-            println!("  Minimum balance needed: {} wei ({:.6} ETH)", gas_cost, gas_cost_eth);
+            
+            let address = wallet.address();
+            let balance = client.get_balance(address, None).await?;
             
             if balance > U256::zero() {
-                if balance > gas_cost {
-                    let send_amount = balance - gas_cost;
-                    let send_amount_eth = send_amount.as_u128() as f64 / 1_000_000_000_000_000_000.0;
+                println!("\nDefunding {} account {} ({})...", account_type, idx + 1, address);
+                println!("  Current balance: {} wei ({} ETH)", balance, format_eth(balance));
+
+                // Calculate gas cost for transfer
+                let gas_price = U256::zero();  // Using zero gas price
+                let gas_limit = U256::from(21_000);
+                let gas_cost = gas_price * gas_limit;
+                
+                // Send entire balance minus gas cost
+                let transfer_amount = balance - gas_cost;
+                
+                if transfer_amount > U256::zero() {
+                    // Get the current nonce for this account
+                    let nonce = client.get_transaction_count(address, None).await?;
                     
                     let tx = TransactionRequest::new()
                         .to(master_address)
-                        .value(send_amount)
-                        .from(wallet.address())
-                        .gas(21_000)
-                        .gas_price(gas_price);
+                        .value(transfer_amount)
+                        .from(address)
+                        .gas(gas_limit)
+                        .gas_price(gas_price)
+                        .nonce(nonce);  // Add the current nonce
 
                     let typed_tx = TypedTransaction::Legacy(tx);
-                    let signature = wallet.sign_transaction(&typed_tx).await?;
-                    let signed_tx = typed_tx.rlp_signed(&signature);
-                    
-                    client.send_raw_transaction(signed_tx).await?;
-                    
-                    defunded += 1;
-                    println!("  ✓ Defunded {} wei ({:.6} ETH)", send_amount, send_amount_eth);
-                    println!("    Kept {} wei ({:.6} ETH) for gas", gas_cost, gas_cost_eth);
+                    match wallet.sign_transaction(&typed_tx).await {
+                        Ok(signature) => {
+                            let signed_tx = typed_tx.rlp_signed(&signature);
+                            match client.send_raw_transaction(signed_tx).await {
+                                Ok(tx_hash) => {
+                                    println!("✓ Transaction successful!");
+                                    println!("  Transaction hash: 0x{:x}", tx_hash.tx_hash());
+                                    println!("  Amount transferred: {} wei ({} ETH)", 
+                                        transfer_amount, format_eth(transfer_amount));
+                                    total_defunded += 1;
+                                }
+                                Err(e) => {
+                                    println!("✗ Transaction failed!");
+                                    println!("  Error: {}", e);
+                                    total_failed += 1;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            println!("✗ Failed to sign transaction!");
+                            println!("  Error: {}", e);
+                            total_failed += 1;
+                        }
+                    }
                 } else {
-                    let needed = gas_cost - balance;
-                    let needed_eth = needed.as_u128() as f64 / 1_000_000_000_000_000_000.0;
-                    println!("  ✗ Balance too low to cover gas costs");
-                    println!("    Needs {} more wei ({:.6} more ETH)", needed, needed_eth);
+                    println!("  Skipping: Balance too low to cover gas cost");
+                    println!("  Current balance: {} wei", balance);
+                    total_failed += 1;
                 }
             } else {
-                println!("  - No balance to defund");
+                println!("\nSkipping {} account {} ({}): Zero balance", 
+                    account_type, idx + 1, address);
             }
         }
-        Ok(defunded)
-    }
-
-    // Defund both sender and receiver accounts from each node
-    for node_idx in 1..=num_nodes {
-        let filename = format!("node-{}.json", node_idx);
-        let file_content = fs::read_to_string(&filename)?;
-        let node_data: Value = serde_json::from_str(&file_content)?;
-        
-        // Process sender accounts
-        let senders = node_data["senders"].as_array().unwrap();
-        total_defunded += process_accounts(senders, node_idx, master_address, &client, "sender").await?;
-        
-        // Process receiver accounts
-        let receivers = node_data["receivers"].as_array().unwrap();
-        total_defunded += process_accounts(receivers, node_idx, master_address, &client, "receiver").await?;
     }
 
     let elapsed = start_time.elapsed();
-    println!("Successfully defunded {} accounts in {:?}", total_defunded, elapsed);
+    println!("\nDefunding Summary for Node {}:", node);
+    println!("Total accounts processed: {}", total_defunded + total_failed);
+    println!("Successfully defunded: {}", total_defunded);
+    println!("Failed/skipped: {}", total_failed);
+    println!("Time taken: {:?}", elapsed);
 
     Ok(())
 }
@@ -740,29 +552,34 @@ async fn check_node_balances(node: usize) -> eyre::Result<()> {
     let filename = format!("node-{}.json", node);
     let file_content = fs::read_to_string(&filename)?;
     let node_data: Value = serde_json::from_str(&file_content)?;
-    let senders = node_data["senders"].as_array()
-        .ok_or_else(|| eyre::eyre!("No senders found in {}", filename))?;
 
-    println!("\nChecking balances for Node {} sender accounts...", node);
+    println!("\nChecking balances for Node {} accounts...", node);
     println!("Using RPC URL: {}", rpc_url);
     
     let chain_id = client.get_chainid().await?;
     println!("Chain ID: {}", chain_id);
 
-    // Check balance for each sender account
-    for (idx, sender) in senders.iter().enumerate() {
-        let address = sender["address"].as_str()
-            .ok_or_else(|| eyre::eyre!("Invalid address format"))?;
-        let address: Address = address.parse()?;
+    // Process both senders and receivers
+    for account_type in ["senders", "receivers"] {
+        let accounts = node_data[account_type].as_array()
+            .ok_or_else(|| eyre::eyre!("{} not found in {}", account_type, filename))?;
 
-        let balance = client.get_balance(address, None).await?;
+        println!("\n{} Accounts:", if account_type == "senders" { "Sender" } else { "Receiver" });
         
-        println!("\nSender Account {}:", idx + 1);
-        println!("  Address: {}", address);
-        println!("  Balance: {} wei ({} ETH)", 
-            balance, 
-            format_eth(balance)
-        );
+        for (idx, account) in accounts.iter().enumerate() {
+            let address = account["address"].as_str()
+                .ok_or_else(|| eyre::eyre!("Invalid address format"))?;
+            let address: Address = address.parse()?;
+
+            let balance = client.get_balance(address, None).await?;
+            
+            println!("\nAccount {} ({}):", idx + 1, if account_type == "senders" { "Sender" } else { "Receiver" });
+            println!("  Address: {}", address);
+            println!("  Balance: {} wei ({} ETH)", 
+                balance, 
+                format_eth(balance)
+            );
+        }
     }
 
     Ok(())
