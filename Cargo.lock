@@ -4167,6 +4167,7 @@ dependencies = [
  "clap",
  "ethereum-types 0.12.1",
  "ethers",
+ "eyre",
  "hex",
  "k256",
  "rand",

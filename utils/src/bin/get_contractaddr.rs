@@ -6,10 +6,10 @@ use ethers::{
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Set up the provider (RPC URL)
-    let provider = Provider::<Http>::try_from("http://34.48.205.25:8845")?;
+    let provider = Provider::<Http>::try_from("http://34.21.80.98:8845")?;
 
     // Transaction hash - convert from hex string to H256
-    let tx_hash = "0x51316f6ffe3b5d21abff33dcfcc88b4e98088a926140e29dde7d0a415693894c"
+    let tx_hash = "0x5866b5c382d7e7670fd59c7b3786ff5ab73cdce02a9910629dbe2ba9dadf7c62"
         .parse::<H256>()?;
 
     // Get the transaction receipt
