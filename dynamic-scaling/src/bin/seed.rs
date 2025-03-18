@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use ethers::{
     prelude::*,
-    types::{Address, U256},
+    types::{Address, TransactionRequest, transaction::eip2718::TypedTransaction, U256},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -32,6 +32,15 @@ enum Commands {
         #[arg(long)]
         num_nodes: usize,
     },
+    /// Fund sender accounts across all nodes
+    Fund {
+        #[arg(long)]
+        num_nodes: usize,
+        #[arg(long)]
+        num_accounts: usize,
+        #[arg(long)]
+        amount_wei: U256,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -55,6 +64,14 @@ fn main() {
         }
         Commands::Prepare { num_accounts, num_nodes } => {
             prepare_node_accounts(num_accounts, num_nodes);
+        }
+        Commands::Fund { num_nodes, num_accounts, amount_wei } => {
+            let runtime = tokio::runtime::Runtime::new()
+                .expect("Failed to create Tokio runtime");
+            
+            if let Err(err) = runtime.block_on(fund_accounts(num_nodes, num_accounts, amount_wei)) {
+                eprintln!("Error funding accounts: {}", err);
+            }
         }
     }
 }
@@ -176,4 +193,77 @@ fn check_balances(num_accounts: usize, rpc_url: &str) {
     if let Err(err) = runtime.block_on(get_balances(num_accounts, rpc_url)) {
         eprintln!("Error checking balances: {}", err);
     }
+}
+
+async fn fund_accounts(num_nodes: usize, num_accounts: usize, amount_wei: U256) -> eyre::Result<()> {
+    // ... existing validation code ...
+
+    // Get master wallet private key from .env
+    let master_key = env::var("MASTER_WALLET_KEY")
+        .expect("MASTER_WALLET_KEY must be set in .env file");
+    let master_wallet = master_key.parse::<LocalWallet>()
+        .expect("Invalid master wallet private key");
+
+    // Connect to Ethereum network
+    let rpc_url = env::var("ETH_RPC_URL")
+        .expect("ETH_RPC_URL must be set in .env file");
+    let provider = Provider::<Http>::try_from(rpc_url)?;
+    let client = Arc::new(provider);
+    let master_wallet = master_wallet.with_chain_id(client.get_chainid().await?.as_u64());
+
+
+    // Get the current nonce for the master wallet
+       let nonce = client.get_transaction_count(
+        master_wallet.address(),
+        None
+    ).await?;
+    
+    let mut current_nonce = nonce;
+
+    println!("Starting to fund accounts...");
+    let start_time = Instant::now();
+    let mut total_funded = 0;
+
+    // Fund sender accounts for each node
+    for node_idx in 1..=num_nodes {
+        let filename = format!("node-{}.json", node_idx);
+        let file_content = fs::read_to_string(&filename)?;
+        let node_data: Value = serde_json::from_str(&file_content)?;
+        let senders = node_data["senders"].as_array().unwrap();
+
+        for sender in senders {
+            let address = sender["address"].as_str()
+                .ok_or_else(|| eyre::eyre!("Invalid address format"))?;
+            let to_address: Address = address.parse()?;
+
+            let tx = TransactionRequest::new()
+                .to(to_address)
+                .value(amount_wei)
+                .from(master_wallet.address())
+                .gas(21_000)  // Add minimum required gas
+                .nonce(current_nonce);  // Add the current nonce
+
+            
+
+            // Convert to TypedTransaction and sign
+            let typed_tx = TypedTransaction::Legacy(tx);
+            let signature = master_wallet.sign_transaction(&typed_tx).await?;
+            
+            // Combine transaction and signature
+            let signed_tx = typed_tx.rlp_signed(&signature);
+            
+            // Send the transaction
+            client.send_raw_transaction(signed_tx).await?;
+            current_nonce = current_nonce.checked_add(1.into())
+                .expect("Nonce overflow");  // Increment nonce using U256           
+            total_funded += 1;
+            println!("Funded account {} in node {}", address, node_idx);
+        }
+    }
+
+    let elapsed = start_time.elapsed();
+    println!("Successfully funded {} accounts with {} wei each in {:?}", 
+        total_funded, amount_wei, elapsed);
+
+    Ok(())
 }
