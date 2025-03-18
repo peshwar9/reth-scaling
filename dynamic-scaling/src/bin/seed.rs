@@ -48,6 +48,15 @@ enum Commands {
         #[arg(long)]
         num_accounts: usize,
     },
+    /// Send ETH cross-chain between nodes
+    SendEth {
+        #[arg(long)]
+        num_nodes: usize,
+        #[arg(long)]
+        num_accounts: usize,
+        #[arg(long)]
+        amount_wei: U256,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -86,6 +95,14 @@ fn main() {
             
             if let Err(err) = runtime.block_on(defund_accounts(num_nodes, num_accounts)) {
                 eprintln!("Error defunding accounts: {}", err);
+            }
+        }
+        Commands::SendEth { num_nodes, num_accounts, amount_wei } => {
+            let runtime = tokio::runtime::Runtime::new()
+                .expect("Failed to create Tokio runtime");
+            
+            if let Err(err) = runtime.block_on(send_eth_crosschain(num_nodes, num_accounts, amount_wei)) {
+                eprintln!("Error sending cross-chain ETH: {}", err);
             }
         }
     }
@@ -144,7 +161,10 @@ async fn get_balances(num_accounts: usize, rpc_url: &str) -> eyre::Result<()> {
             &addr_str[addr_str.len()-4..]  // Last 4 chars
         );
         
-        println!("Address: {} Balance: {} wei", shortened, balance);
+        // Convert wei to ETH (1 ETH = 10^18 wei)
+        let eth = balance.as_u128() as f64 / 1e18;
+        
+        println!("Address: {} Balance: {} wei ({:.18} ETH)", shortened, balance, eth);
     }
 
     Ok(())
@@ -247,8 +267,9 @@ async fn fund_accounts(num_nodes: usize, num_accounts: usize, amount_wei: U256) 
         let file_content = fs::read_to_string(&filename)?;
         let node_data: Value = serde_json::from_str(&file_content)?;
         let senders = node_data["senders"].as_array().unwrap();
-
-        for sender in senders {
+        
+        // Take only the first num_accounts senders
+        for sender in senders.iter().take(num_accounts) {
             let address = sender["address"].as_str()
                 .ok_or_else(|| eyre::eyre!("Invalid address format"))?;
             let to_address: Address = address.parse()?;
@@ -404,6 +425,139 @@ async fn defund_accounts(num_nodes: usize, num_accounts: usize) -> eyre::Result<
 
     let elapsed = start_time.elapsed();
     println!("Successfully defunded {} accounts in {:?}", total_defunded, elapsed);
+
+    Ok(())
+}
+
+async fn send_eth_crosschain(num_nodes: usize, num_accounts: usize, amount_wei: U256) -> eyre::Result<()> {
+    // Validate node files and get chain IDs, contract addresses, and RPC URLs
+    let mut chain_ids = Vec::new();
+    let mut contract_addresses = Vec::new();
+    let mut rpc_urls = Vec::new();
+    
+    for node_idx in 1..=num_nodes {
+        // Validate node file exists
+        let filename = format!("node-{}.json", node_idx);
+        if !Path::new(&filename).exists() {
+            return Err(eyre::eyre!("Node file {} not found", filename));
+        }
+
+        // Get chain ID, contract address, and RPC URL from environment
+        let chain_id: u32 = env::var(format!("NODE{}_CHAINID", node_idx))
+            .map_err(|_| eyre::eyre!("NODE{}_CHAINID not set in .env", node_idx))?
+            .parse()
+            .map_err(|_| eyre::eyre!("Invalid chain ID format for NODE{}_CHAINID", node_idx))?;
+        
+        let contract_addr = env::var(format!("NODE{}_CONTRACT", node_idx))
+            .map_err(|_| eyre::eyre!("NODE{}_CONTRACT not set in .env", node_idx))?
+            .parse::<Address>()
+            .map_err(|_| eyre::eyre!("Invalid contract address format for NODE{}_CONTRACT", node_idx))?;
+
+        let rpc_url = env::var(format!("NODE{}_RPC", node_idx))
+            .map_err(|_| eyre::eyre!("NODE{}_RPC not set in .env", node_idx))?;
+
+        chain_ids.push(chain_id);
+        contract_addresses.push(contract_addr);
+        rpc_urls.push(rpc_url);
+    }
+
+    println!("Starting cross-chain ETH transfers...");
+    let start_time = Instant::now();
+    let mut total_transfers = 0;
+    let mut failed_transfers = 0;
+
+    // Process transfers for each source node
+    for src_node in 1..=num_nodes {
+        let src_filename = format!("node-{}.json", src_node);
+        let src_content = fs::read_to_string(&src_filename)
+            .map_err(|e| eyre::eyre!("Failed to read source node file {}: {}", src_filename, e))?;
+        let src_data: Value = serde_json::from_str(&src_content)
+            .map_err(|e| eyre::eyre!("Failed to parse JSON from {}: {}", src_filename, e))?;
+        
+        // Connect to source node's network
+        let provider = Provider::<Http>::try_from(rpc_urls[src_node - 1].clone())
+            .map_err(|e| eyre::eyre!("Failed to connect to Node {} RPC {}: {}", 
+                src_node, rpc_urls[src_node - 1], e))?;
+        let client = Arc::new(provider);
+
+        // Process each sender account
+        for acc_idx in 0..num_accounts {
+            let sender = &src_data["senders"][acc_idx];
+            let sender_key = sender["private_key"].as_str()
+                .ok_or_else(|| eyre::eyre!("Invalid private key format in {} for sender {}", 
+                    src_filename, acc_idx + 1))?;
+            
+            let sender_wallet = sender_key.parse::<LocalWallet>()
+                .map_err(|e| eyre::eyre!("Failed to parse sender private key in {} for account {}: {}", 
+                    src_filename, acc_idx + 1, e))?;
+            
+            let chain_id = client.get_chainid().await
+                .map_err(|e| eyre::eyre!("Failed to get chain ID from Node {} RPC: {}", src_node, e))?;
+            let sender_wallet = sender_wallet.with_chain_id(chain_id.as_u64());
+
+            // Send to each destination node
+            for dst_node in 1..=num_nodes {
+                if dst_node != src_node {  // Skip self-transfers
+                    let dst_filename = format!("node-{}.json", dst_node);
+                    let dst_content = fs::read_to_string(&dst_filename)
+                        .map_err(|e| eyre::eyre!("Failed to read destination node file {}: {}", 
+                            dst_filename, e))?;
+                    let dst_data: Value = serde_json::from_str(&dst_content)
+                        .map_err(|e| eyre::eyre!("Failed to parse JSON from {}: {}", dst_filename, e))?;
+
+                    // Get receiver address
+                    let receiver = &dst_data["receivers"][acc_idx];
+                    let receiver_addr = receiver["address"].as_str()
+                        .ok_or_else(|| eyre::eyre!("Invalid receiver address in {} for account {}", 
+                            dst_filename, acc_idx + 1))?
+                        .parse::<Address>()
+                        .map_err(|e| eyre::eyre!("Failed to parse receiver address: {}", e))?;
+
+                    // Create contract instance for source node
+                    println!("\nSending {} wei from Node {} (Chain ID: {}) Account {} to Node {} (Chain ID: {}) Account {}", 
+                        amount_wei, src_node, chain_ids[src_node - 1], acc_idx + 1, 
+                        dst_node, chain_ids[dst_node - 1], acc_idx + 1);
+                    
+                    println!("Using contract {} on Node {}", contract_addresses[src_node - 1], src_node);
+
+                    let contract = Contract::new(
+                        contract_addresses[src_node - 1],
+                        serde_json::from_slice::<ethers::abi::Abi>(include_bytes!("../../../reth-contract/out/MonetSmartContract.sol/MonetSmartContract.json"))?,
+                        client.clone()
+                    );
+
+                    // Send transaction
+                    match contract
+                        .method::<_, H256>("sendETHToDestinationChain", (
+                            chain_ids[dst_node - 1],
+                            receiver_addr,
+                        ))
+                        .map_err(|e| eyre::eyre!("Failed to create contract method call: {}", e))?
+                        .value(amount_wei)
+                        .send()
+                        .await {
+                            Ok(tx) => {
+                                println!("✓ Transaction successful!");
+                                println!("  Transaction hash: {}", tx.tx_hash());
+                                total_transfers += 1;
+                            }
+                            Err(e) => {
+                                println!("✗ Transaction failed!");
+                                println!("  Error: {}", e);
+                                failed_transfers += 1;
+                            }
+                        }
+                }
+            }
+        }
+    }
+
+    let elapsed = start_time.elapsed();
+    println!("\nTransfer Summary:");
+    println!("Total transfers attempted: {}", total_transfers + failed_transfers);
+    println!("Successful transfers: {}", total_transfers);
+    println!("Failed transfers: {}", failed_transfers);
+    println!("Time taken: {:?}", elapsed);
 
     Ok(())
 }

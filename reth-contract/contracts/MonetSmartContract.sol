@@ -90,10 +90,11 @@ contract MonetSmartContract is ReentrancyGuard {
     // Array to store all destination chain IDs
     uint32[] private destinationChainIDs;
 
-    // Auto-incrementing message ID
-    uint32 public nextMessageId = 1;
+    // Message ID tracking per destination chain
+    mapping(uint32 => uint32) private messageIdByDestinationChain;
+
     // map to store received message id for source chains
-    mapping(uint32 => uint32) private lastProcessedMessageId;
+    mapping(uint32 => uint32) private lastProcessedMessageIdBySourceChain;
 
     // Events
     event DestinationChainAdded(
@@ -318,11 +319,10 @@ contract MonetSmartContract is ReentrancyGuard {
         uint256 requiredFee = supportedDestinationChains[chainID].fees[
             messageType
         ];
-        require(requiredFee > 0, "Message type not supported");
         require(msg.value == requiredFee, "Incorrect fee amount");
 
-        uint32 messageId = nextMessageId;
-        nextMessageId++;
+        messageIdByDestinationChain[chainID]++;
+        uint32 messageId = messageIdByDestinationChain[chainID];
 
         emit MessageSent(
             chainID,
@@ -342,12 +342,15 @@ contract MonetSmartContract is ReentrancyGuard {
         bytes calldata payload
     ) external onlyWhitelistedRelayers {
         require(
-            sourceChainMessageId > lastProcessedMessageId[sourceChainId],
+            sourceChainMessageId >
+                lastProcessedMessageIdBySourceChain[sourceChainId],
             "Message ID too old or already processed"
         );
 
         // Update the last processed message ID for this chain
-        lastProcessedMessageId[sourceChainId] = sourceChainMessageId;
+        lastProcessedMessageIdBySourceChain[
+            sourceChainId
+        ] = sourceChainMessageId;
 
         emit MessageReceived(
             sourceChainId,
@@ -368,8 +371,8 @@ contract MonetSmartContract is ReentrancyGuard {
         require(msg.value > 0, "Amount must be greater than zero");
         require(recipient != address(0), "Invalid recipient");
 
-        uint32 messageId = nextMessageId;
-        nextMessageId++;
+        messageIdByDestinationChain[chainID]++;
+        uint32 messageId = messageIdByDestinationChain[chainID];
 
         emit ETHSentToDestinationChain(
             chainID,
@@ -388,7 +391,8 @@ contract MonetSmartContract is ReentrancyGuard {
         uint256 amount
     ) external onlyWhitelistedRelayers {
         require(
-            sourceChainMessageId > lastProcessedMessageId[sourceChainId],
+            sourceChainMessageId >
+                lastProcessedMessageIdBySourceChain[sourceChainId],
             "Message ID too old or already processed"
         );
         require(
@@ -401,7 +405,9 @@ contract MonetSmartContract is ReentrancyGuard {
         (bool success, ) = payable(recipient).call{value: amount}("");
         require(success, "ETH transfer failed");
 
-        lastProcessedMessageId[sourceChainId] = sourceChainMessageId;
+        lastProcessedMessageIdBySourceChain[
+            sourceChainId
+        ] = sourceChainMessageId;
 
         emit ETHReceivedFromSourceChain(
             sourceChainId,
@@ -423,7 +429,8 @@ contract MonetSmartContract is ReentrancyGuard {
         require(recipientsLength == amounts.length, "Mismatched arrays length");
         require(recipientsLength > 0, "No recipients provided");
         require(
-            sourceChainFirstMessageId > lastProcessedMessageId[sourceChainId],
+            sourceChainFirstMessageId >
+                lastProcessedMessageIdBySourceChain[sourceChainId],
             "Message ID too old or already processed"
         );
 
@@ -452,7 +459,7 @@ contract MonetSmartContract is ReentrancyGuard {
             "Insufficient contract balance"
         );
 
-        lastProcessedMessageId[sourceChainId] = endMessageId;
+        lastProcessedMessageIdBySourceChain[sourceChainId] = endMessageId;
 
         emit ETHReceivedFromSourceChainInBatch(
             sourceChainId,
@@ -496,7 +503,7 @@ contract MonetSmartContract is ReentrancyGuard {
     }
 
     // Function to get destination chain details (RPC URL, contract address, supported message types)
-    function getDestinationChainInfo(uint32 chainID)
+    function getDestinationChainInfo(uint32 destionationChainId)
         external
         view
         returns (
@@ -506,24 +513,30 @@ contract MonetSmartContract is ReentrancyGuard {
         )
     {
         require(
-            supportedDestinationChains[chainID].contractAddress != address(0),
+            supportedDestinationChains[destionationChainId].contractAddress !=
+                address(0),
             "Chain not supported"
         );
 
-        DestinationChain storage chain = supportedDestinationChains[chainID];
+        DestinationChain storage chain = supportedDestinationChains[
+            destionationChainId
+        ];
         return (chain.rpcURL, chain.contractAddress, chain.supportedTypes);
     }
 
     // Function to get required fee for a given chain and type
     function getRequiredFeeForDestinationChain(
-        uint32 chainID,
+        uint32 destionationChainId,
         uint8 messageType
     ) external view returns (uint256) {
         require(
-            supportedDestinationChains[chainID].contractAddress != address(0),
+            supportedDestinationChains[destionationChainId].contractAddress !=
+                address(0),
             "Chain not supported"
         );
-        DestinationChain storage chain = supportedDestinationChains[chainID];
+        DestinationChain storage chain = supportedDestinationChains[
+            destionationChainId
+        ];
 
         // Ensure type exists
         bool typeExists = false;
@@ -538,12 +551,20 @@ contract MonetSmartContract is ReentrancyGuard {
         return chain.fees[messageType];
     }
 
-    function getLastProcessedMessageId(uint32 sourceChainId)
+    function getLastProcessedMessageIdBySourceChain(uint32 sourceChainId)
         external
         view
         returns (uint32)
     {
-        return lastProcessedMessageId[sourceChainId];
+        return lastProcessedMessageIdBySourceChain[sourceChainId];
+    }
+
+    function getMessageIdByDestinationChain(uint32 destinationChainId)
+        external
+        view
+        returns (uint32)
+    {
+        return messageIdByDestinationChain[destinationChainId];
     }
 }
 

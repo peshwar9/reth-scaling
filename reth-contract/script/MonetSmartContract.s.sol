@@ -4,7 +4,7 @@ pragma solidity ^0.8.13;
 import {Script, console} from "forge-std/Script.sol";
 import {MonetSmartContract} from "../contracts/MonetSmartContract.sol";
 
-contract SimpleStorageScript is Script {
+contract MonetSmartContractScript is Script {
     MonetSmartContract public monetContract;
 
     function setUp() public {}
