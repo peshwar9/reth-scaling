@@ -607,7 +607,7 @@ async fn send_eth_crosschain(num_nodes: usize, num_accounts: usize, amount_wei: 
                         .await {
                             Ok(tx) => {
                                 println!("✓ Transaction successful on chain {}!", chain_ids[src_node - 1]);
-                                println!("  Transaction hash: {}", tx.tx_hash());
+                                println!("  Transaction hash: 0x{:x}", tx.tx_hash());  // Print full hash
                                 println!("  Source chain: {}", chain_ids[src_node - 1]);
                                 println!("  Destination chain: {}", chain_ids[dst_node - 1]);
                                 total_transfers += 1;
