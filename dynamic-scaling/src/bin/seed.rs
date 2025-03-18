@@ -123,11 +123,13 @@ async fn get_balances(num_accounts: usize, rpc_url: &str) -> eyre::Result<()> {
 
     // Print all balances
     for (addr, balance) in balances.iter() {
-        println!(
-            "Address: {} Balance: {} ETH",
-            addr,
-            format_eth(*balance)
+        let addr_str = addr.to_string();
+        let shortened = format!("{}...{}", 
+            &addr_str[..6],  // First 6 chars
+            &addr_str[addr_str.len()-4..]  // Last 4 chars
         );
+        
+        println!("Address: {} Balance: {} wei", shortened, balance);
     }
 
     Ok(())
