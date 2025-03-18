@@ -474,10 +474,11 @@ async fn send_eth_crosschain(num_nodes: usize, num_accounts: usize, amount_wei: 
         let src_data: Value = serde_json::from_str(&src_content)
             .map_err(|e| eyre::eyre!("Failed to parse JSON from {}: {}", src_filename, e))?;
         
-        // Connect to source node's network
-        let provider = Provider::<Http>::try_from(rpc_urls[src_node - 1].clone())
-            .map_err(|e| eyre::eyre!("Failed to connect to Node {} RPC {}: {}", 
-                src_node, rpc_urls[src_node - 1], e))?;
+        // Connect to source node's network using its specific RPC URL
+        let src_rpc = env::var(format!("NODE{}_RPC", src_node))
+            .map_err(|_| eyre::eyre!("NODE{}_RPC not set in .env", src_node))?;
+        let provider = Provider::<Http>::try_from(src_rpc)
+            .map_err(|e| eyre::eyre!("Failed to connect to Node {} RPC: {}", src_node, e))?;
         let client = Arc::new(provider);
 
         // Process each sender account
@@ -520,11 +521,48 @@ async fn send_eth_crosschain(num_nodes: usize, num_accounts: usize, amount_wei: 
                     
                     println!("Using contract {} on Node {}", contract_addresses[src_node - 1], src_node);
 
+                    let contract_json: Value = serde_json::from_slice(
+                        include_bytes!("../../../reth-contract/out/MonetSmartContract.sol/MonetSmartContract.json")
+                    )?;
+                    let abi: ethers::abi::Abi = serde_json::from_value(contract_json["abi"].clone())?;
+                    
                     let contract = Contract::new(
                         contract_addresses[src_node - 1],
-                        serde_json::from_slice::<ethers::abi::Abi>(include_bytes!("../../../reth-contract/out/MonetSmartContract.sol/MonetSmartContract.json"))?,
-                        client.clone()
+                        abi,
+                        Arc::new(SignerMiddleware::new(
+                            client.clone(),
+                            sender_wallet.clone()
+                        ))
                     );
+
+                    // Print detailed transfer information
+                    println!("\nCross-chain Transfer Details:");
+                    println!("  From Node {} (Chain ID: {})", src_node, chain_ids[src_node - 1]);
+                    println!("  To Node {} (Chain ID: {})", dst_node, chain_ids[dst_node - 1]);
+                    println!("  Amount: {} wei", amount_wei);
+                    println!("  Source Account: {}", sender_wallet.address());
+                    println!("  Destination Account: {}", receiver_addr);
+                    println!("  Using Contract: {}", contract_addresses[src_node - 1]);
+
+                    // Check balances before transfer
+                    let sender_balance = client.get_balance(sender_wallet.address(), None).await?;
+                    let gas_price = client.get_gas_price().await?;
+                    let gas_limit = U256::from(50_000); // Gas limit for contract interaction
+                    let total_needed = gas_price * gas_limit + amount_wei;
+                    
+                    if sender_balance < total_needed {
+                        println!("✗ Insufficient funds for cross-chain transfer!");
+                        println!("  Source Chain ID: {}", chain_ids[src_node - 1]);
+                        println!("  Source Address: {}", sender_wallet.address());
+                        println!("  Current balance: {} wei ({} ETH)", 
+                            sender_balance, format_eth(sender_balance));
+                        println!("  Required balance: {} wei ({} ETH)", 
+                            total_needed, format_eth(total_needed));
+                        println!("  Missing: {} wei ({} ETH)", 
+                            total_needed - sender_balance, format_eth(total_needed - sender_balance));
+                        failed_transfers += 1;
+                        continue;
+                    }
 
                     // Send transaction
                     match contract
@@ -534,15 +572,31 @@ async fn send_eth_crosschain(num_nodes: usize, num_accounts: usize, amount_wei: 
                         ))
                         .map_err(|e| eyre::eyre!("Failed to create contract method call: {}", e))?
                         .value(amount_wei)
+                        .gas(gas_limit)
+                        .gas_price(U256::zero())         // Set gas price to 0
+                      //  .priority_gas_price(U256::zero())  // Set priority fee to 0
                         .send()
                         .await {
                             Ok(tx) => {
-                                println!("✓ Transaction successful!");
+                                println!("✓ Transaction successful on chain {}!", chain_ids[src_node - 1]);
                                 println!("  Transaction hash: {}", tx.tx_hash());
+                                println!("  Source chain: {}", chain_ids[src_node - 1]);
+                                println!("  Destination chain: {}", chain_ids[dst_node - 1]);
                                 total_transfers += 1;
                             }
                             Err(e) => {
-                                println!("✗ Transaction failed!");
+                                println!("✗ Transaction failed on chain {}!", chain_ids[src_node - 1]);
+                                println!("  Source Chain ID: {}", chain_ids[src_node - 1]);
+                                println!("  Source Address: {}", sender_wallet.address());
+                                println!("  Current balance: {} wei ({} ETH)", 
+                                    sender_balance, format_eth(sender_balance));
+                                println!("  Gas limit set: {}", gas_limit);
+                                println!("  Gas price: {} wei", gas_price);
+                                println!("  Total gas cost: {} wei ({} ETH)", 
+                                    gas_price * gas_limit, format_eth(gas_price * gas_limit));
+                                println!("  Transfer amount: {} wei", amount_wei);
+                                println!("  Total needed: {} wei ({} ETH)", 
+                                    total_needed, format_eth(total_needed));
                                 println!("  Error: {}", e);
                                 failed_transfers += 1;
                             }
