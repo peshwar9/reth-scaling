@@ -95,7 +95,6 @@ struct TxInfo {
 
 #[derive(Debug)]
 struct PreparedTx {
-    round: usize,
     tx: TypedTransaction,
     wallet: LocalWallet,
     info: TxInfo,
@@ -344,7 +343,6 @@ async fn send_eth_crosschain(
         .map_err(|_| eyre::eyre!("Invalid chain ID format for NODE{}_CHAINID", to_node))?;
 
     // Store transaction info for later verification
-    let mut transactions: Vec<TxInfo> = Vec::new();
 
     println!("Starting cross-chain ETH transfers...");
     let start_time = Instant::now();
@@ -424,12 +422,11 @@ async fn send_eth_crosschain(
             let typed_tx = TypedTransaction::Legacy(tx);
 
             prepared_txs.push(PreparedTx {
-                round,
                 tx: typed_tx,
                 wallet: sender_wallet.clone(),
                 info: TxInfo {
                     round,
-                    hash: H256::zero(), // Will be set after sending
+                    hash: H256::zero(),
                     from_chain: src_chain_id,
                     to_chain: dst_chain_id,
                     from_addr: sender_wallet.address(),
@@ -451,7 +448,7 @@ async fn send_eth_crosschain(
     let send_start = Instant::now();
 
     let mut handles = Vec::new();
-    let mut transactions = Vec::new();
+    let mut transactions: Vec<TxInfo> = Vec::new();
     let semaphore = Arc::new(Semaphore::new(50));
 
     for prepared in prepared_txs.into_iter() {
@@ -524,8 +521,9 @@ async fn send_eth_crosschain(
                         "failed"
                     };
 
-                    writeln!(log, "{},{},{:#x},{},{},{:#x},{:#x},{}",
+                    writeln!(log, "{},{},{},{},{},{},{},{},{}",
                         status,
+                        receipt.block_number.unwrap_or_default(),
                         tx_info.round,
                         tx_info.hash,
                         tx_info.from_chain,
@@ -555,7 +553,7 @@ async fn send_eth_crosschain(
 
     // Log any remaining transactions as pending
     for tx_info in transactions {
-        writeln!(log, "pending,{},{:#x},{},{},{:#x},{:#x},{}",
+        writeln!(log, "pending,0,{},{:#x},{},{},{:#x},{:#x},{}",
             tx_info.round,
             tx_info.hash,
             tx_info.from_chain,

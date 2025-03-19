@@ -19,12 +19,15 @@ cargo run --bin seed defund-node --node 1
 // This will send 3 accounts from node 1 to node 2, 2 times
 cargo run --bin seed -- send-eth-1way --from-node 1 --to-node 2 --num-accounts 3 --amount-wei 1 --rounds 2
 
+Log format: status,block_number,round,tx_hash,from_chain,to_chain,from_addr,to_addr,amount
+
 # Send eth cross-chain multi-way
 
 cargo run --bin seed -- send-eth-nway --num-nodes 3 --num-accounts 2 --amount-wei 1 --rounds 2
 
 # Run indefinitely
 cargo run --bin seed send-eth-loop --num-nodes 2 --num-accounts 2 --amount-wei 1 --rounds "#"
+
 
 
 Sequence of steps:
