@@ -2,24 +2,26 @@
 
 export ETH_RPC_URL=
 
-// Prepare accounts for nodes
+# Prepare accounts for nodes
 cargo run --bin seed prepare --num-accounts 5 --num-nodes 3
 
 
-// Fund individual node sender accounts
+# Fund individual node sender accounts
 cargo run --bin seed fund-node --node 2 --amount-eth 0.000050
 
-// Check balances of individual node sender accounts
+# Check balances of individual node sender accounts
 cargo run --bin seed node-balances --node 2
 
-// Defund Node
+# Defund Node
 cargo run --bin seed defund-node --node 1
 
-// Send eth cross-chain
-cargo run --bin seed send-eth --num-nodes 2 --num-accounts 2 --amount-wei 1
+# Send eth cross-chain one-way
+// This will send 3 accounts from node 1 to node 2, 2 times
+cargo run --bin seed -- send-eth-1way --from-node 1 --to-node 2 --num-accounts 3 --amount-wei 1 --rounds 2
 
-# Run 5 rounds
-cargo run --bin seed send-eth-loop --num-nodes 2 --num-accounts 2 --amount-wei 1 --rounds 5
+# Send eth cross-chain multi-way
+
+cargo run --bin seed -- send-eth-nway --num-nodes 3 --num-accounts 2 --amount-wei 1 --rounds 2
 
 # Run indefinitely
 cargo run --bin seed send-eth-loop --num-nodes 2 --num-accounts 2 --amount-wei 1 --rounds "#"
