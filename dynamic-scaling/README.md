@@ -18,6 +18,11 @@ cargo run --bin seed defund-node --node 1
 // Send eth cross-chain
 cargo run --bin seed send-eth --num-nodes 2 --num-accounts 2 --amount-wei 1
 
+# Run 5 rounds
+cargo run --bin seed send-eth-loop --num-nodes 2 --num-accounts 2 --amount-wei 1 --rounds 5
+
+# Run indefinitely
+cargo run --bin seed send-eth-loop --num-nodes 2 --num-accounts 2 --amount-wei 1 --rounds "#"
 
 
 Sequence of steps:
