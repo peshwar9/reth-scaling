@@ -498,9 +498,15 @@ async fn send_eth_crosschain(
     println!("Average time per transaction: {:?}", send_time / total_sent as u32);
     println!("Transactions per second: {:.2}", total_sent as f64 / send_time.as_secs_f64());
 
+    // Collect block statistics
+    let mut block_stats: HashMap<U64, usize> = HashMap::new();
+    let mut total_success = 0;
+    let mut total_failed = 0;
+
     // Create log file
     let log_file = OpenOptions::new()
         .create(true)
+        .read(true)  // Add read permission to read back the file
         .append(true)
         .open("eth-transfer-1way.log")?;
     let mut log = BufWriter::new(log_file);
@@ -516,14 +522,20 @@ async fn send_eth_crosschain(
             match client.get_transaction_receipt(tx_info.hash).await? {
                 Some(receipt) => {
                     let status = if receipt.status.unwrap().as_u64() == 1 {
+                        total_success += 1;
                         "success"
                     } else {
+                        total_failed += 1;
                         "failed"
                     };
 
+                    // Update block statistics
+                    let block_num = receipt.block_number.unwrap_or_default();
+                    *block_stats.entry(block_num).or_insert(0) += 1;
+
                     writeln!(log, "{},{},{},{},{},{},{},{},{}",
                         status,
-                        receipt.block_number.unwrap_or_default(),
+                        block_num,
                         tx_info.round,
                         tx_info.hash,
                         tx_info.from_chain,
@@ -567,10 +579,14 @@ async fn send_eth_crosschain(
     log.flush()?;
 
     let elapsed = start_time.elapsed();
-    println!("\nTransfer Summary:");
-    println!("Expected transactions: {}", expected_total);
-    println!("Total transactions sent: {}", total_sent);
-    println!("Time taken: {:?}", elapsed);
+    println!("\nTransaction Summary:");
+    println!("Total transactions: {}", total_sent);
+    println!("Total success: {}", total_success);
+    println!("Total failures: {}", total_failed);
+    println!("\nBlock-wise Distribution:");
+    for (block, count) in block_stats.iter() {
+        println!("Block #{}: {} transactions", block, count);
+    }
 
     // Add verification
     if total_sent != expected_total {
