@@ -100,6 +100,12 @@ struct PreparedTx {
     info: TxInfo,
 }
 
+struct BlockStats {
+    tx_count: usize,
+    total_gas_used: U256,
+    our_gas_used: U256,
+}
+
 fn main() {
     dotenv().ok();
     let cli = Cli::parse();
@@ -499,7 +505,7 @@ async fn send_eth_crosschain(
     println!("Transactions per second: {:.2}", total_sent as f64 / send_time.as_secs_f64());
 
     // Collect block statistics
-    let mut block_stats: HashMap<U64, usize> = HashMap::new();
+    let mut block_stats: HashMap<U64, BlockStats> = HashMap::new();
     let mut total_success = 0;
     let mut total_failed = 0;
 
@@ -531,7 +537,20 @@ async fn send_eth_crosschain(
 
                     // Update block statistics
                     let block_num = receipt.block_number.unwrap_or_default();
-                    *block_stats.entry(block_num).or_insert(0) += 1;
+                    let stats = block_stats.entry(block_num).or_insert(BlockStats {
+                        tx_count: 0,
+                        total_gas_used: U256::zero(),
+                        our_gas_used: U256::zero(),
+                    });
+                    stats.tx_count += 1;
+                    stats.our_gas_used += receipt.gas_used.unwrap_or_default();
+
+                    // Get block info for total gas used
+                    if let Ok(block) = client.get_block(block_num).await {
+                        if let Some(block) = block {
+                            stats.total_gas_used = block.gas_used;
+                        }
+                    }
 
                     writeln!(log, "{},{},{},{},{},{},{},{},{}",
                         status,
@@ -584,8 +603,14 @@ async fn send_eth_crosschain(
     println!("Total success: {}", total_success);
     println!("Total failures: {}", total_failed);
     println!("\nBlock-wise Distribution:");
-    for (block, count) in block_stats.iter() {
-        println!("Block #{}: {} transactions", block, count);
+    for (block, stats) in block_stats.iter() {
+        println!("Block #{}: {} transactions, Total Gas: {}, Our Gas: {} ({:.2}%)", 
+            block, 
+            stats.tx_count,
+            stats.total_gas_used,
+            stats.our_gas_used,
+            (stats.our_gas_used.as_u128() as f64 / stats.total_gas_used.as_u128() as f64) * 100.0
+        );
     }
 
     // Add verification
