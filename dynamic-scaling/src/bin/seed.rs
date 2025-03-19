@@ -426,6 +426,12 @@ async fn send_eth_crosschain(num_nodes: usize, num_accounts: usize, amount_wei: 
                         continue;
                     }
 
+                    // Add debug prints before sending transaction
+                    println!("Debug: Sending cross-chain transaction");
+                    println!("  Contract Address: {:#x}", contract_addresses[src_node - 1]);
+                    println!("  Destination Chain ID: {}", chain_ids[dst_node - 1]);
+                    println!("  Receiver Address: {:#x}", receiver_addr);
+
                     // Send transaction and log result
                     match contract.method::<_, H256>("sendETHToDestinationChain", (
                         chain_ids[dst_node - 1],
@@ -616,6 +622,8 @@ async fn send_eth_crosschain_loop(num_nodes: usize, num_accounts: usize, amount_
     
     let start_time = Instant::now();
     let mut round = 1;
+    let mut successful_transfers = 0;
+    let mut failed_transfers = 0;
     
     loop {
         println!("\nStarting round {}", round);
@@ -726,26 +734,47 @@ async fn send_eth_crosschain_loop(num_nodes: usize, num_accounts: usize, amount_
                       .send()
                       .await {
                         Ok(tx) => {
-                            let tx_hash = format!("{:#x}", tx.tx_hash());
+                            // Store tx_hash before await since tx will be moved
+                            let tx_hash = tx.tx_hash();
                             
-                            // Log format: tx_hash,round,timestamp,src_chain,dst_chain,from,to,amount
-                            writeln!(log, "{},{},{},{},{},{},{},{}",
-                                tx_hash,  // Transaction hash first
-                                round,
-                                SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
-                                chain_ids[src_node - 1],
-                                chain_ids[dst_node - 1],
-                                sender_wallet.address(),
-                                receiver_addr,
-                                amount_wei
-                            )?;
-                            log.flush()?;
-                            
-                            println!("✓ Round {} - Transaction successful!", round);
-                            println!("  Hash: {}", tx_hash);
+                            match tx.await {
+                                Ok(receipt) => {
+                                    if receipt.unwrap().status.unwrap().as_u64() == 1 {
+                                        let tx_hash_str = format!("{:#x}", tx_hash);
+                                        
+                                        // Log format: tx_hash,round,timestamp,src_chain,dst_chain,from,to,amount
+                                        writeln!(log, "{},{},{},{},{},{},{},{}",
+                                            tx_hash_str,
+                                            round,
+                                            SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
+                                            chain_ids[src_node - 1],
+                                            chain_ids[dst_node - 1],
+                                            sender_wallet.address(),
+                                            receiver_addr,
+                                            amount_wei
+                                        )?;
+                                        log.flush()?;
+                                        
+                                        println!("✓ Round {} - Transaction successful!", round);
+                                        println!("  Hash: {}", tx_hash_str);
+                                        successful_transfers += 1;
+                                    } else {
+                                        println!("✗ Round {} - Transaction failed (reverted)!", round);
+                                        println!("  Hash: {:#x}", tx_hash);
+                                        failed_transfers += 1;
+                                    }
+                                }
+                                Err(e) => {
+                                    println!("✗ Round {} - Transaction failed while waiting for receipt!", round);
+                                    println!("  Hash: {:#x}", tx_hash);
+                                    println!("  Error: {}", e);
+                                    failed_transfers += 1;
+                                }
+                            }
                         }
                         Err(e) => {
                             println!("✗ Transaction failed: {}", e);
+                            failed_transfers += 1;
                         }
                     }
                 }
@@ -761,6 +790,8 @@ async fn send_eth_crosschain_loop(num_nodes: usize, num_accounts: usize, amount_
     let elapsed = start_time.elapsed();
     println!("\nTransfer Summary:");
     println!("Total rounds completed: {}", round);
+    println!("Successful transfers: {}", successful_transfers);
+    println!("Failed transfers: {}", failed_transfers);
     println!("Time taken: {:?}", elapsed);
     
     Ok(())
@@ -773,6 +804,7 @@ async fn get_chain_ids(num_nodes: usize) -> eyre::Result<Vec<u32>> {
             .map_err(|_| eyre::eyre!("NODE{}_CHAINID not set in .env", node_idx))?
             .parse()
             .map_err(|_| eyre::eyre!("Invalid chain ID format for NODE{}_CHAINID", node_idx))?;
+        println!("Debug: Node {} Chain ID: {}", node_idx, chain_id);
         chain_ids.push(chain_id);
     }
     Ok(chain_ids)

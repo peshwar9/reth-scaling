@@ -74,6 +74,7 @@ fn main() {
                         let param_type = input["type"].as_str().unwrap();
                         match param_type {
                             "uint32" => ParamType::Uint(32),
+                            "uint256" => ParamType::Uint(256),
                             "string" => ParamType::String,
                             "address" => ParamType::Address,
                             "uint8[]" => ParamType::Array(Box::new(ParamType::Uint(8))),
@@ -91,52 +92,88 @@ fn main() {
                 // Remove 0x prefix and decode hex data
                 let data = hex::decode(&log.data[2..]).unwrap();
                 
-                // Decode the event data
-                let data = hex::decode(&log.data[2..]).unwrap();
-                
-                println!("\nDecoded Parameters:");
-                
-                // Print indexed parameter (chainId)
-                let chain_id = U256::from_big_endian(&log.topics[1].as_bytes()).as_u32();
-                println!("chainId (indexed): {}", chain_id);
+                match event_name {
+                    "DestinationChainUpdated" => {
+                        // Existing decoding logic for DestinationChainUpdated
+                        println!("\nDecoded Parameters:");
+                        let chain_id = U256::from_big_endian(&log.topics[1].as_bytes()).as_u32();
+                        println!("chainId (indexed): {}", chain_id);
 
-                // Manual decoding of non-indexed parameters
-                println!("\nNon-indexed parameters:");
-                
-                // Get offsets from first 4 32-byte chunks
-                let rpc_url_offset = U256::from_big_endian(&data[0..32]).as_usize();
-                let contract_addr = format!("0x{}", hex::encode(&data[32..64]));
-                let types_offset = U256::from_big_endian(&data[64..96]).as_usize();
-                let fees_offset = U256::from_big_endian(&data[96..128]).as_usize();
+                        // Get offsets from first 4 32-byte chunks
+                        let rpc_url_offset = U256::from_big_endian(&data[0..32]).as_usize();
+                        let contract_addr = format!("0x{}", hex::encode(&data[32..64]));
+                        let types_offset = U256::from_big_endian(&data[64..96]).as_usize();
+                        let fees_offset = U256::from_big_endian(&data[96..128]).as_usize();
 
-                // Decode RPC URL (string)
-                let str_len = U256::from_big_endian(&data[rpc_url_offset..rpc_url_offset + 32]).as_usize();
-                let rpc_url = String::from_utf8_lossy(&data[rpc_url_offset + 32..rpc_url_offset + 32 + str_len]);
-                println!("rpcUrl: {} (length: {})", rpc_url, str_len);
-                println!("contractAddress: {}", contract_addr);
+                        // Decode RPC URL (string)
+                        let str_len = U256::from_big_endian(&data[rpc_url_offset..rpc_url_offset + 32]).as_usize();
+                        let rpc_url = String::from_utf8_lossy(&data[rpc_url_offset + 32..rpc_url_offset + 32 + str_len]);
+                        println!("rpcUrl: {} (length: {})", rpc_url, str_len);
+                        println!("contractAddress: {}", contract_addr);
 
-                // Decode types array
-                let types_len = U256::from_big_endian(&data[types_offset..types_offset + 32]).as_usize();
-                println!("Transaction Types: [");
-                for i in 0..types_len {
-                    let val = U256::from_big_endian(&data[types_offset + 32 + i*32..types_offset + 64 + i*32]);
-                    println!("    {}: {}", i, val);
-                }
-                println!("]");
+                        // Decode types array
+                        let types_len = U256::from_big_endian(&data[types_offset..types_offset + 32]).as_usize();
+                        println!("Transaction Types: [");
+                        for i in 0..types_len {
+                            let val = U256::from_big_endian(&data[types_offset + 32 + i*32..types_offset + 64 + i*32]);
+                            println!("    {}: {}", i, val);
+                        }
+                        println!("]");
 
-                // Decode fees array
-                let fees_len = U256::from_big_endian(&data[fees_offset..fees_offset + 32]).as_usize();
-                println!("Transaction Fees: [");
-                for i in 0..fees_len {
-                    let val = U256::from_big_endian(&data[fees_offset + 32 + i*32..fees_offset + 64 + i*32]);
-                    println!("    Type {}: {} wei", i, val);
-                }
-                println!("]");
+                        // Decode fees array
+                        let fees_len = U256::from_big_endian(&data[fees_offset..fees_offset + 32]).as_usize();
+                        println!("Transaction Fees: [");
+                        for i in 0..fees_len {
+                            let val = U256::from_big_endian(&data[fees_offset + 32 + i*32..fees_offset + 64 + i*32]);
+                            println!("    Type {}: {} wei", i, val);
+                        }
+                        println!("]");
 
-                // Print raw data chunks for debugging
-                println!("\nRaw data chunks:");
-                for (i, chunk) in data.chunks(32).enumerate() {
-                    println!("Chunk {}: 0x{}", i, hex::encode(chunk));
+                        // Print raw data chunks for debugging
+                        println!("\nRaw data chunks:");
+                        for (i, chunk) in data.chunks(32).enumerate() {
+                            println!("Chunk {}: 0x{}", i, hex::encode(chunk));
+                        }
+                    }
+                    "ETHSentToDestinationChain" => {
+                        println!("\nDecoded Parameters:");
+                        
+                        // First parameter (source chain ID) is indexed
+                        let source_chain_id = U256::from_big_endian(&log.topics[1].as_bytes()).as_u32();
+                        println!("Source Chain ID (indexed): {}", source_chain_id);
+
+                        // Print raw data first for debugging
+                        println!("\nRaw data chunks:");
+                        for (i, chunk) in data.chunks(32).enumerate() {
+                            println!("Chunk {}: 0x{}", i, hex::encode(chunk));
+                        }
+
+                        // Make sure we have enough data
+                        if data.len() >= 64 {  // At least 2 chunks of 32 bytes
+                            // Decode non-indexed parameters from data
+                            let source_addr = format!("0x{}", hex::encode(&data[12..32]));  // address is 20 bytes
+                            let dest_addr = format!("0x{}", hex::encode(&data[44..64]));    // address is 20 bytes
+                            
+                            if data.len() >= 96 {  // At least 3 chunks
+                                let dest_chain_id = U256::from_big_endian(&data[64..96]).as_u32();
+                                println!("Destination Chain ID: {}", dest_chain_id);
+                            }
+                            
+                            if data.len() >= 128 {  // At least 4 chunks
+                                let amount = U256::from_big_endian(&data[96..128]);
+                                println!("Amount: {} wei", amount);
+                            }
+
+                            println!("Source Address: {}", source_addr);
+                            println!("Destination Address: {}", dest_addr);
+                        } else {
+                            println!("Warning: Not enough data to decode all parameters");
+                            println!("Data length: {} bytes", data.len());
+                        }
+                    }
+                    _ => {
+                        println!("Decoding not implemented for event: {}", event_name);
+                    }
                 }
                 break;
             }
