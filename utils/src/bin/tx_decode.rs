@@ -15,8 +15,8 @@ use std::str::FromStr;  // Added for H256::from_str
 async fn main() -> Result<()> {
     // Hardcode the values for now
   //  let rpc_url = "http://34.21.80.98:8845";
-    let rpc_url = "http://34.48.132.251:8845";
-    let tx_hash = "0x2959903431bbc50925fa68e56eeb4a5702355d6987f896fc261b625d77235e75";
+    let rpc_url = "http://34.48.205.25:8845";
+    let tx_hash = "0xd4d2a1647389f2d61b711335dd47bcc2a81fd9fd133edf33c114e3e407fef702";
 
     // Create provider
     let provider = Provider::<Http>::try_from(rpc_url)?;
@@ -126,8 +126,9 @@ fn decode_function_call(input: &Bytes, abi: &ethers::abi::Abi) -> Option<String>
                         .map(|(token, param)| {
                             match token {
                                 Token::Uint(val) if param.name == "chainID" => {
-                                    // Show both interpretations
-                                    let bytes = val.to_be_bytes();
+                                    // Convert U256 to bytes
+                                    let mut bytes = [0u8; 32];
+                                    val.to_big_endian(&mut bytes);
                                     let le_val = u32::from_le_bytes(bytes[28..32].try_into().unwrap());
                                     let be_val = u32::from_be_bytes(bytes[28..32].try_into().unwrap());
                                     format!("{}: {} (BE: {}, LE: {}, raw: {:?})", 
