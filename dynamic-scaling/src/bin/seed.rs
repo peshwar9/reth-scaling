@@ -14,6 +14,7 @@ use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
 use std::collections::HashMap;
 use tokio::time::{sleep, Duration};
+use tokio::sync::Semaphore;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -79,6 +80,25 @@ enum Commands {
 struct Account {
     private_key: String,
     address: String,
+}
+
+#[derive(Debug)]
+struct TxInfo {
+    round: usize,
+    hash: H256,
+    from_chain: u32,
+    to_chain: u32,
+    from_addr: Address,
+    to_addr: Address,
+    amount: U256,
+}
+
+#[derive(Debug)]
+struct PreparedTx {
+    round: usize,
+    tx: TypedTransaction,
+    wallet: LocalWallet,
+    info: TxInfo,
 }
 
 fn main() {
@@ -324,22 +344,20 @@ async fn send_eth_crosschain(
         .map_err(|_| eyre::eyre!("Invalid chain ID format for NODE{}_CHAINID", to_node))?;
 
     // Store transaction info for later verification
-    #[derive(Debug)]
-    struct TxInfo {
-        round: usize,
-        hash: H256,
-        from_chain: u32,
-        to_chain: u32,
-        from_addr: Address,
-        to_addr: Address,
-        amount: U256,
-    }
-    let mut transactions = Vec::new();
+    let mut transactions: Vec<TxInfo> = Vec::new();
 
     println!("Starting cross-chain ETH transfers...");
     let start_time = Instant::now();
     let mut total_sent = 0;
-    let expected_total = rounds * num_accounts; // Add this to track expected total
+    let expected_total = rounds * num_accounts;
+
+    // Store prepared transactions
+    let mut prepared_txs = Vec::new();
+    println!("Preparing {} transactions...", expected_total);
+    let prep_start = Instant::now();
+
+    // Track nonces for each sender
+    let mut sender_nonces: HashMap<Address, U256> = HashMap::new();
 
     // Read source and destination node files
     let src_filename = format!("node-{}.json", from_node);
@@ -364,63 +382,28 @@ async fn send_eth_crosschain(
     )?;
     let abi: ethers::abi::Abi = serde_json::from_value(contract_json["abi"].clone())?;
 
-    // Track nonces for each sender
-    let mut sender_nonces: HashMap<Address, U256> = HashMap::new();
+    // Create base contract instance for encoding
+    let contract = Contract::new(
+        contract_addr,
+        abi.clone(),
+        client.clone()
+    );
 
-    // Process each round
+    // Prepare all transactions first
     for round in 1..=rounds {
-        println!("\nStarting round {}/{}", round, rounds);
-
-        // Process each account
         for acc_idx in 0..num_accounts {
             let sender = &src_data["senders"][acc_idx];
-            let sender_key = sender["private_key"].as_str()
-                .ok_or_else(|| eyre::eyre!("Invalid private key format"))?;
-            
-            // Set chain ID when creating wallet
-            let sender_wallet = sender_key.parse::<LocalWallet>()?
+            let sender_wallet = sender["private_key"].as_str()
+                .ok_or_else(|| eyre::eyre!("Invalid private key format"))?
+                .parse::<LocalWallet>()?
                 .with_chain_id(chain_id.as_u64());
-            
+
             let receiver = &dst_data["receivers"][acc_idx];
             let receiver_addr = receiver["address"].as_str()
                 .ok_or_else(|| eyre::eyre!("Invalid receiver address"))?
                 .parse::<Address>()?;
 
-            println!("\nTransaction Details:");
-            println!("  From Node: {} (Chain ID: {})", from_node, src_chain_id);
-            println!("  To Node: {} (Chain ID: {})", to_node, dst_chain_id);
-            println!("  Sender Address: {:#x}", sender_wallet.address());
-            println!("  Receiver Address: {:#x}", receiver_addr);
-            println!("  Amount: {} wei", amount_wei);
-            println!("  Contract Address: {:#x}", contract_addr);
-
-            let contract = Contract::new(
-                contract_addr,
-                abi.clone(),
-                Arc::new(SignerMiddleware::new(
-                    client.clone(),
-                    sender_wallet.clone()
-                ))
-            );
-
-            // Check balance and send transaction
-            let sender_balance = client.get_balance(sender_wallet.address(), None).await?;
-            println!("  Sender Balance: {} wei", sender_balance);
-            
-            let gas_price = U256::zero();
-            let gas_limit = U256::from(50_000);
-            let total_needed = amount_wei;
-
-            if sender_balance < total_needed {
-                println!("✗ Insufficient funds!");
-                println!("  Balance: {} wei", sender_balance);
-                println!("  Needed: {} wei", total_needed);
-                continue;
-            }
-
-            println!("Sending transaction...");
-
-            // Get or initialize nonce for this sender
+            // Get or initialize nonce
             let nonce = if let Some(n) = sender_nonces.get(&sender_wallet.address()) {
                 *n
             } else {
@@ -429,45 +412,94 @@ async fn send_eth_crosschain(
                 n
             };
 
-            match contract.method::<_, H256>("sendETHToDestinationChain", (
-                dst_chain_id,
-                receiver_addr,
-            ))?.gas(gas_limit)
-              .gas_price(gas_price)
-              .value(amount_wei)
-              .nonce(nonce)  // Set the nonce explicitly
-              .send()
-              .await {
-                Ok(tx) => {
-                    let tx_hash = tx.tx_hash();
-                    println!("✓ Transaction sent successfully!");
-                    println!("  Transaction hash: {:#x}", tx_hash);
-                    
-                    // Increment nonce for next use
-                    sender_nonces.insert(sender_wallet.address(), nonce + U256::from(1));
-                    
-                    transactions.push(TxInfo {
-                        round,
-                        hash: tx_hash,
-                        from_chain: src_chain_id,
-                        to_chain: dst_chain_id,
-                        from_addr: sender_wallet.address(),
-                        to_addr: receiver_addr,
-                        amount: amount_wei,
-                    });
-                    total_sent += 1;
+            // Create transaction
+            let tx = TransactionRequest::new()
+                .to(contract_addr)
+                .value(amount_wei)
+                .gas(50_000)
+                .gas_price(U256::zero())
+                .nonce(nonce)
+                .data(contract.encode("sendETHToDestinationChain", (dst_chain_id, receiver_addr))?);
+
+            let typed_tx = TypedTransaction::Legacy(tx);
+
+            prepared_txs.push(PreparedTx {
+                round,
+                tx: typed_tx,
+                wallet: sender_wallet.clone(),
+                info: TxInfo {
+                    round,
+                    hash: H256::zero(), // Will be set after sending
+                    from_chain: src_chain_id,
+                    to_chain: dst_chain_id,
+                    from_addr: sender_wallet.address(),
+                    to_addr: receiver_addr,
+                    amount: amount_wei,
+                },
+            });
+
+            // Increment nonce for next use
+            sender_nonces.insert(sender_wallet.address(), nonce + U256::from(1));
+        }
+    }
+
+    let prep_time = prep_start.elapsed();
+    println!("Transaction preparation took: {:?}", prep_time);
+
+    // Send all prepared transactions in parallel
+    println!("\nSending {} transactions...", prepared_txs.len());
+    let send_start = Instant::now();
+
+    let mut handles = Vec::new();
+    let mut transactions = Vec::new();
+    let semaphore = Arc::new(Semaphore::new(50));
+
+    for prepared in prepared_txs.into_iter() {
+        let client = client.clone();
+        let semaphore = semaphore.clone();
+        
+        handles.push(tokio::spawn(async move {
+            let _permit = semaphore.acquire().await.unwrap();
+            match prepared.wallet.sign_transaction(&prepared.tx).await {
+                Ok(signature) => {
+                    let signed_tx = prepared.tx.rlp_signed(&signature);
+                    match client.send_raw_transaction(signed_tx).await {
+                        Ok(tx) => {
+                            let mut info = prepared.info;
+                            info.hash = tx.tx_hash();
+                            Ok(info)
+                        }
+                        Err(e) => {
+                            println!("Failed to send transaction: {}", e);
+                            Err(eyre::eyre!("Transaction failed: {}", e))
+                        }
+                    }
                 }
                 Err(e) => {
-                    println!("✗ Transaction failed to send!");
-                    println!("  Error: {}", e);
-                    println!("  Sender: {:#x}", sender_wallet.address());
-                    println!("  Chain ID used: {}", chain_id);
+                    println!("Failed to sign transaction: {}", e);
+                    Err(eyre::eyre!("Signing failed: {}", e))
                 }
+            }
+        }));
+    }
+
+    // Collect results
+    for handle in handles {
+        match handle.await? {
+            Ok(info) => {
+                transactions.push(info);
+                total_sent += 1;
+            }
+            Err(e) => {
+                println!("Transaction failed: {}", e);
             }
         }
     }
 
-    println!("\nAll transactions sent. Waiting for receipts...");
+    let send_time = send_start.elapsed();
+    println!("\nTransaction sending took: {:?}", send_time);
+    println!("Average time per transaction: {:?}", send_time / total_sent as u32);
+    println!("Transactions per second: {:.2}", total_sent as f64 / send_time.as_secs_f64());
 
     // Create log file
     let log_file = OpenOptions::new()
