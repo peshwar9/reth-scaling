@@ -5,6 +5,8 @@ export ETH_RPC_URL=
 # Prepare accounts for nodes
 cargo run --bin seed prepare --num-accounts 5 --num-nodes 3
 
+# prepare new
+cargo run --bin seed -- prepare-new --node 1 --num-accounts 10
 
 # Fund individual node sender accounts
 cargo run --bin seed fund-node --node 2 --amount-eth 0.000050
@@ -21,6 +23,7 @@ cargo run --bin seed -- send-eth-1way --from-node 1 --to-node 2 --num-accounts 3
 
 Log format: status,block_number,round,tx_hash,from_chain,to_chain,from_addr,to_addr,amount
 
+
 # Send eth cross-chain multi-way
 
 cargo run --bin seed -- send-eth-nway --num-nodes 3 --num-accounts 2 --amount-wei 1 --rounds 2
@@ -28,7 +31,12 @@ cargo run --bin seed -- send-eth-nway --num-nodes 3 --num-accounts 2 --amount-we
 # Run indefinitely
 cargo run --bin seed send-eth-loop --num-nodes 2 --num-accounts 2 --amount-wei 1 --rounds "#"
 
+# Send eth burst:
+## For zero gas price:
+cargo run --bin seed -- send-eth-burst --from-node 1 --to-node 2 --num-txs 10 --amount-wei 1 --zero-gas-price
 
+## For non-zero gas price (omit the flag):
+cargo run --bin seed -- send-eth-burst --from-node 1 --to-node 2 --num-txs 10 --amount-wei 1
 
 Sequence of steps:
 1. Prepare accounts

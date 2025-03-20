@@ -17,6 +17,7 @@ use tokio::time::{sleep, Duration};
 use tokio::sync::Semaphore;
 use log::{debug, info, warn, error};
 use env_logger;
+use rand;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -75,6 +76,28 @@ enum Commands {
         amount_wei: U256,
         #[arg(long)]
         rounds: String,  // String to handle both numbers and '#'
+    },
+    /// Send many transactions quickly using same sender and receiver
+    #[command(name = "send-eth-burst")]
+    SendEthBurst {
+        #[arg(long)]
+        from_node: usize,
+        #[arg(long)]
+        to_node: usize,
+        #[arg(long)]
+        num_txs: usize,
+        #[arg(long)]
+        amount_wei: U256,
+        #[arg(long)]
+        zero_gas_price: bool,  // This will be treated as a flag
+    },
+    /// Generate new sender and receiver accounts for a single node
+    #[command(name = "prepare-new")]
+    PrepareNew {
+        #[arg(long)]
+        node: usize,
+        #[arg(long)]
+        num_accounts: usize,
     },
 }
 
@@ -160,6 +183,17 @@ fn main() {
             if let Err(err) = runtime.block_on(send_eth_crosschain_loop(num_nodes, num_accounts, amount_wei, &rounds)) {
                 eprintln!("Error in N-way ETH transfer: {}", err);
             }
+        }
+        Commands::SendEthBurst { from_node, to_node, num_txs, amount_wei, zero_gas_price } => {
+            let runtime = tokio::runtime::Runtime::new()
+                .expect("Failed to create Tokio runtime");
+            
+            if let Err(err) = runtime.block_on(send_eth_burst(from_node, to_node, num_txs, amount_wei, zero_gas_price)) {
+                eprintln!("Error in ETH burst transfer: {}", err);
+            }
+        }
+        Commands::PrepareNew { node, num_accounts } => {
+            prepare_new_accounts(node, num_accounts);
         }
     }
 }
@@ -412,9 +446,10 @@ async fn send_eth_crosschain(
                 .with_chain_id(chain_id.as_u64());
 
             let receiver = &dst_data["receivers"][acc_idx];
-            let receiver_addr = receiver["address"].as_str()
+            let receiver_addr: Address = receiver["address"].as_str()
                 .ok_or_else(|| eyre::eyre!("Invalid receiver address"))?
-                .parse::<Address>()?;
+                .parse()
+                .map_err(|e| eyre::eyre!("Failed to parse receiver address: {}", e))?;
 
             // Get or initialize nonce
             let sender_address = sender_wallet.address();
@@ -517,8 +552,12 @@ async fn send_eth_crosschain(
 
     let send_time = send_start.elapsed();
     println!("\nTransaction sending took: {:?}", send_time);
-    println!("Average time per transaction: {:?}", send_time / total_sent as u32);
-    println!("Transactions per second: {:.2}", total_sent as f64 / send_time.as_secs_f64());
+    if total_sent > 0 {
+        println!("Average time per transaction: {:?}", send_time / total_sent as u32);
+        println!("Transactions per second: {:.2}", total_sent as f64 / send_time.as_secs_f64());
+    } else {
+        println!("No transactions were sent successfully");
+    }
 
     // Collect block statistics
     let mut block_stats: HashMap<U64, BlockStats> = HashMap::new();
@@ -543,6 +582,7 @@ async fn send_eth_crosschain(
         for (idx, tx_info) in transactions.iter().enumerate() {
             match client.get_transaction_receipt(tx_info.hash).await? {
                 Some(receipt) => {
+                    let block_num = receipt.block_number.unwrap_or_default();
                     let status = if receipt.status.unwrap().as_u64() == 1 {
                         total_success += 1;
                         "success"
@@ -552,7 +592,6 @@ async fn send_eth_crosschain(
                     };
 
                     // Update block statistics
-                    let block_num = receipt.block_number.unwrap_or_default();
                     let stats = block_stats.entry(block_num).or_insert(BlockStats {
                         tx_count: 0,
                         total_gas_used: U256::zero(),
@@ -598,19 +637,19 @@ async fn send_eth_crosschain(
         }
     }
 
-    // Log any remaining transactions as pending
+    // After the timeout loop, log any remaining transactions as pending
     for tx_info in transactions {
-        writeln!(log, "pending,0,{},{:#x},{},{},{:#x},{:#x},{}",
-            tx_info.round,
-            tx_info.hash,
+        writeln!(log, "pending,0,{},{},{},{},0x{:?},0x{:?},{},{}",
+            format!("{:#x}", tx_info.hash),
+            1,
             tx_info.from_chain,
             tx_info.to_chain,
             tx_info.from_addr,
             tx_info.to_addr,
-            tx_info.amount
+            tx_info.amount,
+            SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()
         )?;
     }
-
     log.flush()?;
 
     let elapsed = start_time.elapsed();
@@ -827,10 +866,10 @@ async fn send_eth_crosschain_loop(num_nodes: usize, num_accounts: usize, amount_
                     let dst_content = fs::read_to_string(&dst_file)?;
                     let dst_data: Value = serde_json::from_str(&dst_content)?;
                     let receiver = &dst_data["receivers"][acc_idx];
-                    let receiver_addr = receiver["address"].as_str()
+                    let receiver_addr: Address = receiver["address"].as_str()
                         .ok_or_else(|| eyre::eyre!("Invalid receiver address in {} for account {}", 
                             dst_file, acc_idx + 1))?
-                        .parse::<Address>()
+                        .parse()
                         .map_err(|e| eyre::eyre!("Failed to parse receiver address: {}", e))?;
 
                     // Create contract instance for source node
@@ -883,10 +922,10 @@ async fn send_eth_crosschain_loop(num_nodes: usize, num_accounts: usize, amount_
                     }
 
                     // Send transaction and log result
-                    match contract.method::<_, H256>("sendETHToDestinationChain", (
-                        chain_ids[dst_node - 1],
-                        receiver_addr,
-                    ))?.gas(gas_limit)
+                    match contract.method::<(u32, Address), H256>(
+                        "sendETHToDestinationChain",
+                        (chain_ids[dst_node - 1], receiver_addr)
+                    )?.gas(gas_limit)
                       .gas_price(gas_price)
                       .value(amount_wei)
                       .send()
@@ -978,4 +1017,320 @@ async fn get_contract_addresses(num_nodes: usize) -> eyre::Result<Vec<Address>> 
         addresses.push(contract_addr);
     }
     Ok(addresses)
+}
+
+async fn send_eth_burst(
+    from_node: usize,
+    to_node: usize,
+    num_txs: usize,
+    amount_wei: U256,
+    zero_gas_price: bool,
+) -> eyre::Result<()> {
+    info!("Starting burst ETH transfer");
+
+    // Get source node's details from .env
+    let src_chain_id: u32 = env::var(format!("NODE{}_CHAINID", from_node))?
+        .parse()
+        .map_err(|_| eyre::eyre!("Invalid chain ID format for NODE{}_CHAINID", from_node))?;
+    
+    let contract_addr = env::var(format!("NODE{}_CONTRACT", from_node))?
+        .parse::<Address>()
+        .map_err(|_| eyre::eyre!("Invalid contract address for NODE{}_CONTRACT", from_node))?;
+    
+    let rpc_url = env::var(format!("NODE{}_RPC", from_node))?;
+
+    // Get destination chain ID
+    let dst_chain_id: u32 = env::var(format!("NODE{}_CHAINID", to_node))?
+        .parse()
+        .map_err(|_| eyre::eyre!("Invalid chain ID format for NODE{}_CHAINID", to_node))?;
+
+    println!("Starting burst ETH transfers...");
+    let start_time = Instant::now();
+    let mut total_sent = 0;
+
+    // Store prepared transactions
+    let mut prepared_txs = Vec::new();
+    println!("Preparing {} transactions...", num_txs);
+    let prep_start = Instant::now();
+
+    // Read source and destination node files - only get first sender/receiver
+    let src_filename = format!("node-{}.json", from_node);
+    let src_content = fs::read_to_string(&src_filename)?;
+    let src_data: Value = serde_json::from_str(&src_content)?;
+
+    let dst_filename = format!("node-{}.json", to_node);
+    let dst_content = fs::read_to_string(&dst_filename)?;
+    let dst_data: Value = serde_json::from_str(&dst_content)?;
+
+    // Connect to source node's network
+    let provider = Provider::<Http>::try_from(rpc_url.clone())?;
+    let client = Arc::new(provider);
+    
+    // Get chain ID early
+    let chain_id = client.get_chainid().await?;
+    println!("Connected to network. Chain ID: {}", chain_id);
+
+    // Create contract instance
+    let contract_json: Value = serde_json::from_slice(
+        include_bytes!("../../../reth-contract/out/MonetSmartContract.sol/MonetSmartContract.json")
+    )?;
+    let abi: ethers::abi::Abi = serde_json::from_value(contract_json["abi"].clone())?;
+
+    // Create base contract instance for encoding
+    let contract = Contract::new(
+        contract_addr,
+        abi.clone(),
+        client.clone()
+    );
+
+    // Get first sender and receiver
+    let sender = &src_data["senders"][0];
+    let sender_wallet = sender["private_key"].as_str()
+        .ok_or_else(|| eyre::eyre!("Invalid private key format"))?
+        .parse::<LocalWallet>()?
+        .with_chain_id(chain_id.as_u64());
+
+    let receiver = &dst_data["receivers"][0];
+    let receiver_addr: Address = receiver["address"].as_str()
+        .ok_or_else(|| eyre::eyre!("Invalid receiver address"))?
+        .parse()
+        .map_err(|e| eyre::eyre!("Failed to parse receiver address: {}", e))?;
+
+    // After setting gas price and before preparing transactions
+    let gas_price = if zero_gas_price {
+        U256::zero()
+    } else {
+        U256::from(1_000_000_000)  // 1 gwei
+    };
+    
+    println!("Using gas price: {} wei", gas_price);
+
+    // Check sender balance and required funds
+    let gas_cost = gas_price * U256::from(70_000);  // gas_price * gas_limit
+    let cost_per_tx = gas_cost + amount_wei;
+    let total_needed = cost_per_tx * U256::from(num_txs);
+    let sender_balance = client.get_balance(sender_wallet.address(), None).await?;
+
+    println!("Sender balance: {} wei", sender_balance);
+    println!("Cost per tx: {} wei (gas: {} + value: {})", cost_per_tx, gas_cost, amount_wei);
+    println!("Total needed for {} txs: {} wei", num_txs, total_needed);
+
+    if sender_balance < total_needed {
+        return Err(eyre::eyre!(
+            "Insufficient funds. Have {} wei, need {} wei. Missing {} wei",
+            sender_balance,
+            total_needed,
+            total_needed - sender_balance
+        ));
+    }
+
+    // Get initial nonce once before the loop
+    let initial_nonce = client.get_transaction_count(sender_wallet.address(), None).await?;
+    println!("Starting with nonce: {}", initial_nonce);
+    
+    // Prepare all transactions
+    for i in 0..num_txs {
+        let tx = TransactionRequest::new()
+            .to(contract_addr)
+            .value(amount_wei)
+            .gas(70_000)
+            .gas_price(gas_price)
+            .nonce(initial_nonce + U256::from(i))  // Increment nonce for each tx
+            .data(contract.encode("sendETHToDestinationChain", (dst_chain_id, receiver_addr))?);
+
+        prepared_txs.push(PreparedTx {
+            tx: TypedTransaction::Legacy(tx),
+            wallet: sender_wallet.clone(),
+            info: TxInfo {
+                round: 1,
+                hash: H256::zero(),
+                from_chain: src_chain_id,
+                to_chain: dst_chain_id,
+                from_addr: sender_wallet.address(),
+                to_addr: receiver_addr,
+                amount: amount_wei,
+            },
+        });
+    }
+
+    let prep_time = prep_start.elapsed();
+    println!("Transaction preparation took: {:?}", prep_time);
+
+    // Send all prepared transactions in parallel
+    println!("\nSending {} transactions...", prepared_txs.len());
+    let send_start = Instant::now();
+
+    let mut handles = Vec::new();
+    let mut transactions: Vec<TxInfo> = Vec::new();
+    let semaphore = Arc::new(Semaphore::new(100));
+
+    for prepared in prepared_txs.into_iter() {
+        let client = client.clone();
+        let semaphore = semaphore.clone();
+        
+        handles.push(tokio::spawn(async move {
+            let _permit = semaphore.acquire().await.unwrap();
+            match prepared.wallet.sign_transaction(&prepared.tx).await {
+                Ok(signature) => {
+                    let signed_tx = prepared.tx.rlp_signed(&signature);
+                    match client.send_raw_transaction(signed_tx).await {
+                        Ok(tx) => {
+                            let mut info = prepared.info;
+                            info.hash = tx.tx_hash();
+                            Ok(info)
+                        }
+                        Err(e) => {
+                            println!("Failed to send transaction: {}", e);
+                            Err(eyre::eyre!("Transaction failed: {}", e))
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("Failed to sign transaction: {}", e);
+                    Err(eyre::eyre!("Signing failed: {}", e))
+                }
+            }
+        }));
+    }
+
+    // Collect results
+    for handle in handles {
+        match handle.await? {
+            Ok(info) => {
+                transactions.push(info);
+                total_sent += 1;
+            }
+            Err(e) => {
+                println!("Transaction failed: {}", e);
+            }
+        }
+    }
+
+    let send_time = send_start.elapsed();
+    println!("\nTransaction sending took: {:?}", send_time);
+    if total_sent > 0 {
+        println!("Average time per transaction: {:?}", send_time / total_sent as u32);
+        println!("Transactions per second: {:.2}", total_sent as f64 / send_time.as_secs_f64());
+    } else {
+        println!("No transactions were sent successfully");
+    }
+
+    // Create log file
+    let log_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("eth-transfer-burst.log")?;
+    let mut log = BufWriter::new(log_file);
+
+    // Wait for all transaction receipts with timeout
+    let max_wait = Duration::from_secs(60);
+    let start_wait = Instant::now();
+    let mut successful = 0;
+    let mut failed = 0;
+
+    while !transactions.is_empty() && start_wait.elapsed() < max_wait {
+        let mut completed = Vec::new();
+        
+        for (idx, tx_info) in transactions.iter().enumerate() {
+            match client.get_transaction_receipt(tx_info.hash).await? {
+                Some(receipt) => {
+                    let block_num = receipt.block_number.unwrap_or_default();
+                    if receipt.status.unwrap().as_u64() == 1 {
+                        writeln!(log, "success,{},{},{},{},{},0x{:?},0x{:?},{},{}",
+                            block_num,
+                            format!("{:#x}", tx_info.hash),
+                            1,
+                            tx_info.from_chain,
+                            tx_info.to_chain,
+                            tx_info.from_addr,
+                            tx_info.to_addr,
+                            tx_info.amount,
+                            SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()
+                        )?;
+                        successful += 1;
+                    } else {
+                        writeln!(log, "failed,{},{},{},{},{},0x{:?},0x{:?},{},{}",
+                            block_num,
+                            format!("{:#x}", tx_info.hash),
+                            1,
+                            tx_info.from_chain,
+                            tx_info.to_chain,
+                            tx_info.from_addr,
+                            tx_info.to_addr,
+                            tx_info.amount,
+                            SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()
+                        )?;
+                        failed += 1;
+                    }
+                    completed.push(idx);
+                }
+                None => continue,
+            }
+        }
+
+        for idx in completed.iter().rev() {
+            transactions.remove(*idx);
+        }
+
+        if !transactions.is_empty() {
+            sleep(Duration::from_secs(1)).await;
+        }
+    }
+
+    log.flush()?;
+
+    println!("\nTransaction Summary:");
+    println!("Total transactions: {}", num_txs);
+    println!("Successful: {}", successful);
+    println!("Failed: {}", failed);
+    println!("Time taken: {:?}", start_time.elapsed());
+
+    Ok(())
+}
+
+fn prepare_new_accounts(node: usize, num_accounts: usize) {
+    println!("Generating {} sender-receiver pairs for node {}", num_accounts, node);
+    
+    // Generate accounts
+    let mut senders = Vec::new();
+    let mut receivers = Vec::new();
+    
+    for i in 0..num_accounts {
+        // Generate new random wallets
+        let sender_wallet = LocalWallet::new(&mut rand::thread_rng());
+        let receiver_wallet = LocalWallet::new(&mut rand::thread_rng());
+        
+        // Create account objects
+        let sender = json!({
+            "private_key": format!("{:x}", sender_wallet.signer().to_bytes()),
+            "address": format!("{:?}", sender_wallet.address())
+        });
+        
+        let receiver = json!({
+            "private_key": format!("{:x}", receiver_wallet.signer().to_bytes()),
+            "address": format!("{:?}", receiver_wallet.address())
+        });
+        
+        senders.push(sender);
+        receivers.push(receiver);
+        
+        println!("Generated pair {}", i + 1);
+        println!("  Sender: {}", sender_wallet.address());
+        println!("  Receiver: {}", receiver_wallet.address());
+    }
+    
+    // Create node configuration
+    let node_config = json!({
+        "senders": senders,
+        "receivers": receivers
+    });
+    
+    // Write to file
+    let filename = format!("node-{}.json", node);
+    fs::write(
+        &filename,
+        serde_json::to_string_pretty(&node_config).unwrap()
+    ).expect(&format!("Failed to write {}", filename));
+    
+    println!("\nCreated {} with {} account pairs", filename, num_accounts);
 }
