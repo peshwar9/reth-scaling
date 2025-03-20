@@ -15,6 +15,8 @@ use std::io::{BufWriter, Write};
 use std::collections::HashMap;
 use tokio::time::{sleep, Duration};
 use tokio::sync::Semaphore;
+use log::{debug, info, warn, error};
+use env_logger;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -107,6 +109,9 @@ struct BlockStats {
 }
 
 fn main() {
+    // Initialize logger with environment variable
+    env_logger::init();
+    
     dotenv().ok();
     let cli = Cli::parse();
 
@@ -332,6 +337,10 @@ async fn send_eth_crosschain(
     amount_wei: U256,
     rounds: usize,
 ) -> eyre::Result<()> {
+    info!("Starting cross-chain ETH transfer");
+    debug!("Parameters: from_node={}, to_node={}, num_accounts={}, amount={}, rounds={}", 
+        from_node, to_node, num_accounts, amount_wei, rounds);
+
     // Get source node's details from .env
     let src_chain_id: u32 = env::var(format!("NODE{}_CHAINID", from_node))?
         .parse()
@@ -408,21 +417,25 @@ async fn send_eth_crosschain(
                 .parse::<Address>()?;
 
             // Get or initialize nonce
-            let nonce = if let Some(n) = sender_nonces.get(&sender_wallet.address()) {
-                *n
+            let sender_address = sender_wallet.address();
+            
+            let nonce = if let Some(current_nonce) = sender_nonces.get(&sender_address) {
+                debug!("Using cached nonce {} for sender {:?}", current_nonce, sender_address);
+                *current_nonce
             } else {
-                let n = client.get_transaction_count(sender_wallet.address(), None).await?;
-                sender_nonces.insert(sender_wallet.address(), n);
-                n
+                let current_nonce = client.get_transaction_count(sender_address, None).await?;
+                debug!("Got initial nonce {} for sender {:?}", current_nonce, sender_address);
+                sender_nonces.insert(sender_address, current_nonce);
+                current_nonce
             };
 
-            // Create transaction
+            // Create transaction with tracked nonce
             let tx = TransactionRequest::new()
                 .to(contract_addr)
                 .value(amount_wei)
-                .gas(50_000)
+                .gas(70_000)
                 .gas_price(U256::zero())
-                .nonce(nonce)
+                .nonce(nonce)  // Use tracked nonce
                 .data(contract.encode("sendETHToDestinationChain", (dst_chain_id, receiver_addr))?);
 
             let typed_tx = TypedTransaction::Legacy(tx);
@@ -442,7 +455,10 @@ async fn send_eth_crosschain(
             });
 
             // Increment nonce for next use
-            sender_nonces.insert(sender_wallet.address(), nonce + U256::from(1));
+            if let Some(current_nonce) = sender_nonces.get_mut(&sender_address) {
+                *current_nonce = nonce + U256::from(1);
+                debug!("Incremented nonce to {} for sender {:?}", current_nonce, sender_address);
+            }
         }
     }
 
@@ -552,7 +568,7 @@ async fn send_eth_crosschain(
                         }
                     }
 
-                    writeln!(log, "{},{},{},{},{},{},{},{},{}",
+                    writeln!(log, "{},{},{},{:#x},{},{},{},{},{}",
                         status,
                         block_num,
                         tx_info.round,
@@ -850,7 +866,7 @@ async fn send_eth_crosschain_loop(num_nodes: usize, num_accounts: usize, amount_
                     // Check balances before transfer
                     let sender_balance = client.get_balance(sender_wallet.address(), None).await?;
                     let gas_price = U256::zero();  // Since we're using zero gas price
-                    let gas_limit = U256::from(50_000);  // Changed back to 50K
+                    let gas_limit = U256::from(200_000);  // Increased to 200k to ensure enough gas
                     let total_needed = amount_wei;  // Only need to check against transfer amount since gas is free
                     
                     if sender_balance < total_needed {
@@ -885,7 +901,7 @@ async fn send_eth_crosschain_loop(num_nodes: usize, num_accounts: usize, amount_
                                         let tx_hash_str = format!("{:#x}", tx_hash);
                                         
                                         // Log format: tx_hash,round,timestamp,src_chain,dst_chain,from,to,amount
-                                        writeln!(log, "{},{},{},{},{},{},{},{}",
+                                        writeln!(log, "{},{},{},{:#x},{},{},{},{}",
                                             tx_hash_str,
                                             round,
                                             SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),

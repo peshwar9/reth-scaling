@@ -19,6 +19,8 @@ dotenv = "0.15"  # For loading environment variables (optional)
 ethers = "2.0"
 eyre = "0.6.12"
 clap = { version = "4.4", features = ["derive"] }
+env_logger = "0.10"
+log = "0.4"
 
 
 # Development dependencies (optional)

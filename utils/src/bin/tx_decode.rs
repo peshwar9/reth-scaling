@@ -10,16 +10,23 @@ use serde_json::Value;
 use std::fs;
 use std::path::Path;
 use std::str::FromStr;  // Added for H256::from_str
+use std::env;
+use dotenv::dotenv;
+use hex;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Hardcode the values for now
-  //  let rpc_url = "http://34.21.80.98:8845";
-    let rpc_url = "http://34.48.205.25:8845";
-    let tx_hash = "0xd4d2a1647389f2d61b711335dd47bcc2a81fd9fd133edf33c114e3e407fef702";
+
+    dotenv().ok();
+    
+    // Set up the provider using NODE1_RPC from env
+    let rpc_url = env::var("NODE1_RPC")
+        .expect("RPC_URL must be set in .env file");
+
+    let tx_hash = "0x13146aa5b7912e700723fdb2355c0f0e620394c0992da7a68a2e0517817036e8";
 
     // Create provider
-    let provider = Provider::<Http>::try_from(rpc_url)?;
+    let provider = Provider::<Http>::try_from(rpc_url.clone())?;
     let client = Arc::new(provider);
 
     // Get transaction hash
@@ -65,22 +72,39 @@ fn print_transaction_details(tx: &Transaction, receipt: &TransactionReceipt) -> 
     let status = receipt.status.unwrap().as_u64();
     println!("Status: {}", if status == 1 { "Success" } else { "Failed" });
     
-    // If transaction failed, try to get the revert reason
+    // If transaction failed, try multiple ways to get the revert reason
     if status == 0 {
         println!("Failure Reason:");
-        // TransactionReceipt doesn't have revert_reason, so we'll check logs
+        
+        // 1. Check standard error logs
         if let Some(first_log) = receipt.logs.first() {
-            // Standard error signature
             let error_sig = H256::from_str("0x08c379a0").expect("Invalid error signature");
             if first_log.topics.len() > 0 && first_log.topics[0] == error_sig {
-                // This is a standard error message
                 if first_log.data.len() > 68 {
                     let error_msg = String::from_utf8_lossy(&first_log.data[68..]);
-                    println!("  Error: {}", error_msg);
+                    println!("  From logs: {}", error_msg);
                 }
             }
+        }
+
+        // 2. Check for panic error (0x4e487b71)
+        for log in &receipt.logs {
+            let panic_sig = H256::from_str("0x4e487b71").expect("Invalid panic signature");
+            if log.topics.len() > 0 && log.topics[0] == panic_sig {
+                println!("  Panic detected: {:?}", log.data);
+            }
+        }
+
+        // 3. Check if all gas was used (likely ran out of gas)
+        if receipt.gas_used.unwrap() >= tx.gas {
+            println!("  Likely out of gas - used entire gas limit of {}", tx.gas);
+        }
+
+        // 4. Try to decode revert data from transaction
+        if let Some(data) = &receipt.logs.first().map(|log| &log.data) {
+            println!("  Raw revert data: 0x{}", hex::encode(data));
         } else {
-            println!("  No error reason provided");
+            println!("  No error data available");
         }
     }
 

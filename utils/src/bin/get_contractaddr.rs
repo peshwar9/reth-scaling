@@ -2,14 +2,20 @@ use ethers::{
     providers::{Provider, Http, Middleware},
     types::{TransactionReceipt, H256},
 };
+use std::env;
+use dotenv::dotenv;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Set up the provider (RPC URL)
-    let provider = Provider::<Http>::try_from("http://34.21.80.98:8845")?;
+    dotenv().ok();
+    
+    // Set up the provider using NODE1_RPC from env
+    let rpc_url = env::var("NODE1_RPC")
+        .expect("RPC_URL must be set in .env file");
+    let provider = Provider::<Http>::try_from(rpc_url)?;
 
     // Transaction hash - convert from hex string to H256
-    let tx_hash = "0x5866b5c382d7e7670fd59c7b3786ff5ab73cdce02a9910629dbe2ba9dadf7c62"
+    let tx_hash = "0x3f2e6666c282713565fc41b679358dad74dbabb64fb006aed6ce1be9194b56e9"
         .parse::<H256>()?;
 
     // Get the transaction receipt
