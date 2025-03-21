@@ -114,6 +114,24 @@ enum Commands {
         #[arg(long)]
         zero_gas_price: bool,
     },
+    /// Send transactions continuously for extended periods without receipt checking
+    #[command(name = "send-eth-coh-no-receipt")]
+    SendEthCohNoReceipt {
+        #[arg(long)]
+        from_node: usize,
+        #[arg(long)]
+        to_node: usize,
+        #[arg(long)]
+        num_txs: usize,
+        #[arg(long)]
+        amount_wei: U256,
+        #[arg(long)]
+        zero_gas_price: bool,
+        #[arg(long)]
+        iterations: Option<usize>,  // None means run indefinitely
+        #[arg(long, default_value = "0")]
+        delay_secs: u64,  // Delay between iterations
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -223,6 +241,30 @@ fn main() {
                 zero_gas_price
             )) {
                 eprintln!("Error in ETH burst transfer: {}", err);
+            }
+        }
+        Commands::SendEthCohNoReceipt { 
+            from_node, 
+            to_node, 
+            num_txs, 
+            amount_wei, 
+            zero_gas_price,
+            iterations,
+            delay_secs,
+        } => {
+            let runtime = tokio::runtime::Runtime::new()
+                .expect("Failed to create Tokio runtime");
+            
+            if let Err(err) = runtime.block_on(send_eth_coh_no_receipt(
+                from_node, 
+                to_node, 
+                num_txs, 
+                amount_wei, 
+                zero_gas_price,
+                iterations,
+                delay_secs,
+            )) {
+                eprintln!("Error in continuous ETH transfer: {}", err);
             }
         }
     }
@@ -1161,7 +1203,7 @@ async fn send_eth_burst(
     // Create base contract instance for encoding
     let contract = Contract::new(
         contract_addr,
-        abi.clone(),
+        abi,
         client.clone()
     );
 
@@ -1175,8 +1217,7 @@ async fn send_eth_burst(
     let receiver = &dst_data["receivers"][0];
     let receiver_addr: Address = receiver["address"].as_str()
         .ok_or_else(|| eyre::eyre!("Invalid receiver address"))?
-        .parse()
-        .map_err(|e| eyre::eyre!("Failed to parse receiver address: {}", e))?;
+        .parse()?;
 
     // After setting gas price and before preparing transactions
     let gas_price = if zero_gas_price {
@@ -1531,8 +1572,8 @@ async fn send_eth_burst_no_receipt(
         ));
     }
 
-    // Get initial nonce
-    let initial_nonce = client.get_transaction_count(sender_wallet.address(), None).await?;
+    // Get latest nonce at start of this iteration
+    let initial_nonce = client.get_transaction_count(sender_wallet.address(), Some(BlockId::Number(BlockNumber::Pending))).await?;
     println!("Starting with nonce: {}", initial_nonce);
     
     // Send transactions in parallel
@@ -1540,15 +1581,16 @@ async fn send_eth_burst_no_receipt(
     let send_start = Instant::now();
 
     let mut handles = Vec::new();
-    let semaphore = Arc::new(Semaphore::new(100));
+    let semaphore = Arc::new(Semaphore::new(100));  // Limit concurrent transactions
 
+    // Use sequential nonces starting from initial_nonce
     for i in 0..num_txs {
         let tx = TransactionRequest::new()
             .to(contract_addresses[from_node - 1])
             .value(amount_wei)
             .gas(70_000)
             .gas_price(gas_price)
-            .nonce(initial_nonce + U256::from(i))
+            .nonce(initial_nonce + U256::from(i))  // Sequential nonces
             .data(contract.encode("sendETHToDestinationChain", (chain_ids[to_node - 1], receiver_addr))?);
 
         let client = client.clone();
@@ -1589,6 +1631,84 @@ async fn send_eth_burst_no_receipt(
     println!("\nTransaction Summary:");
     println!("Total transactions sent: {}", total_sent);
     println!("Time taken: {:?}", start_time.elapsed());
+
+    Ok(())
+}
+
+// New function that runs send_eth_burst_no_receipt in a loop
+async fn send_eth_coh_no_receipt(
+    from_node: usize,
+    to_node: usize,
+    num_txs: usize,
+    amount_wei: U256,
+    zero_gas_price: bool,
+    iterations: Option<usize>,
+    delay_secs: u64,
+) -> eyre::Result<()> {
+    let total_start = Instant::now();
+    let mut iteration = 0;
+    let mut total_successful = 0;
+    let mut total_failed = 0;
+
+    // Get provider once for nonce checking
+    let provider = Provider::<Http>::try_from(env::var(format!("NODE{}_RPC", from_node))?)?;
+    let client = Arc::new(provider);
+
+    // Get sender wallet once for nonce checking
+    let src_file = format!("node-{}.json", from_node);
+    let src_content = fs::read_to_string(&src_file)?;
+    let src_data: Value = serde_json::from_str(&src_content)?;
+    let sender = &src_data["senders"][0];
+    let sender_wallet = sender["private_key"].as_str()
+        .ok_or_else(|| eyre::eyre!("Invalid private key format"))?
+        .parse::<LocalWallet>()?
+        .with_chain_id(client.get_chainid().await?.as_u64());
+
+    loop {
+        iteration += 1;
+        println!("\n=== Starting iteration {} ===", iteration);
+        let iter_start = Instant::now();
+
+        match send_eth_burst_no_receipt(from_node, to_node, num_txs, amount_wei, zero_gas_price).await {
+            Ok(()) => {
+                total_successful += num_txs;
+            }
+            Err(e) => {
+                println!("Iteration {} failed: {}", iteration, e);
+                total_failed += num_txs;
+            }
+        }
+
+        let iter_elapsed = iter_start.elapsed();
+        println!("\nIteration {} completed in {:?}", iteration, iter_elapsed);
+
+        // Check if we should continue
+        if let Some(max_iterations) = iterations {
+            if iteration >= max_iterations {
+                println!("\nReached maximum iterations ({}), stopping", max_iterations);
+                break;
+            }
+        }
+
+        if delay_secs > 0 {
+            println!("Waiting {} seconds before next iteration...", delay_secs);
+            sleep(Duration::from_secs(delay_secs)).await;
+
+            // Check nonce after delay
+            let current_nonce = client.get_transaction_count(
+                sender_wallet.address(), 
+                Some(BlockId::Number(BlockNumber::Pending))
+            ).await?;
+            println!("Current pending nonce: {}", current_nonce);
+        }
+    }
+
+    let total_elapsed = total_start.elapsed();
+    println!("\nOverall Summary:");
+    println!("Total iterations: {}", iteration);
+    println!("Total successful: {}", total_successful);
+    println!("Total failed: {}", total_failed);
+    println!("Total time: {:?}", total_elapsed);
 
     Ok(())
 }
