@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 use ethers::{
     prelude::*,
     types::{Address, TransactionRequest, transaction::eip2718::TypedTransaction, U256},
+    abi::{RawLog, Token},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -15,7 +16,7 @@ use std::io::{BufWriter, Write};
 use std::collections::HashMap;
 use tokio::time::{sleep, Duration};
 use tokio::sync::Semaphore;
-use log::{debug, info, warn, error};
+use log::{debug, info, warn};
 use env_logger;
 use rand;
 
@@ -109,6 +110,7 @@ struct Account {
 
 #[derive(Debug)]
 struct TxInfo {
+    #[allow(dead_code)]
     round: usize,
     hash: H256,
     from_chain: u32,
@@ -571,37 +573,94 @@ async fn send_eth_crosschain(
         .open("eth-transfer-1way.log")?;
     let mut log = BufWriter::new(log_file);
 
-    // Wait for all transaction receipts with timeout
-    let max_wait = Duration::from_secs(60); // Maximum wait time of 60 seconds
-    let start_wait = Instant::now();
+    // After creating log file, add block stats tracking
+    let mut block_stats: HashMap<U64, BlockStats> = HashMap::new();
     let mut successful = 0;
     let mut failed = 0;
 
+    // Wait for all transaction receipts with timeout
+    let max_wait = Duration::from_secs(60); // Maximum wait time of 60 seconds
+    let start_wait = Instant::now();
+
     while !transactions.is_empty() && start_wait.elapsed() < max_wait {
-        println!("\nChecking {} pending transactions...", transactions.len());
+        debug!("Checking {} pending transactions...", transactions.len());
         let mut completed = Vec::new();
         
         for (idx, tx_info) in transactions.iter().enumerate() {
             match client.get_transaction_receipt(tx_info.hash).await? {
                 Some(receipt) => {
-                    println!("Got receipt for tx: {:#x}", tx_info.hash);
+                    debug!("Got receipt for tx: {:#x}", tx_info.hash);
                     let block_num = receipt.block_number.unwrap_or_default();
+                    
+                    // Update block statistics
+                    let stats = block_stats.entry(block_num).or_insert(BlockStats {
+                        tx_count: 0,
+                        total_gas_used: U256::zero(),
+                        our_gas_used: U256::zero(),
+                    });
+                    stats.tx_count += 1;
+                    stats.our_gas_used += receipt.gas_used.unwrap_or_default();
+
+                    // Get block info for total gas used
+                    if let Ok(block) = client.get_block(block_num).await {
+                        if let Some(block) = block {
+                            stats.total_gas_used = block.gas_used;
+                        }
+                    }
+
                     if receipt.status.unwrap().as_u64() == 1 {
-                        println!("Transaction successful, writing to log...");
-                        writeln!(log, "success,{},{},{},{},{},0x{:?},0x{:?},{},{}",
+                        debug!("Transaction successful, writing to log...");
+                        // Get message ID from logs more safely
+                        let message_id = if let Some(log) = receipt.logs.first() {
+                            // Create raw log for parsing
+                            let raw_log = RawLog {
+                                topics: log.topics.clone(),
+                                data: log.data.to_vec(),
+                            };
+
+                            // Create contract instance for event parsing
+                            let contract_json: Value = serde_json::from_slice(
+                                include_bytes!("../../../reth-contract/out/MonetSmartContract.sol/MonetSmartContract.json")
+                            )?;
+                            let abi: ethers::abi::Abi = serde_json::from_value(contract_json["abi"].clone())?;
+
+                            // Find and parse the event
+                            if let Some(event) = abi.events().find(|e| e.name == "ETHSentToDestinationChain") {
+                                if let Ok(parsed) = event.parse_log(raw_log) {
+                                    // Find messageId parameter
+                                    if let Some(param) = parsed.params.iter().find(|p| p.name == "messageId") {
+                                        if let Token::Uint(val) = &param.value {
+                                            val.as_u64()
+                                        } else {
+                                            0
+                                        }
+                                    } else {
+                                        0
+                                    }
+                                } else {
+                                    0
+                                }
+                            } else {
+                                0
+                            }
+                        } else {
+                            0
+                        };
+                        writeln!(log, "success,{},{},{},{},{},{},{},{},{},{}",
                             block_num,
+                            message_id,
                             format!("{:#x}", tx_info.hash),
                             1,
                             tx_info.from_chain,
                             tx_info.to_chain,
-                            tx_info.from_addr,
-                            tx_info.to_addr,
+                            format!("{:x}", tx_info.from_addr),
+                            format!("{:x}", tx_info.to_addr),
                             tx_info.amount,
                             SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()
                         )?;
                         successful += 1;
                     } else {
-                        println!("Transaction failed, writing to log...");
+                        warn!("Transaction failed: {:#x}", tx_info.hash);
                         writeln!(log, "failed,{},{},{},{},{},0x{:?},0x{:?},{},{}",
                             block_num,
                             format!("{:#x}", tx_info.hash),
@@ -618,20 +677,36 @@ async fn send_eth_crosschain(
                     completed.push(idx);
                 }
                 None => {
-                    println!("No receipt yet for tx: {:#x}", tx_info.hash);
+                    debug!("No receipt yet for tx: {:#x}", tx_info.hash);
                     continue;
                 }
             }
         }
         
-        // After each iteration
+        // Remove completed transactions
+        for idx in completed.iter().rev() {
+            transactions.remove(*idx);
+        }
+
         if !transactions.is_empty() {
-            println!("Waiting for {} more receipts...", transactions.len());
+            debug!("Waiting for {} more receipts...", transactions.len());
             sleep(Duration::from_secs(1)).await;
         }
     }
 
     log.flush()?;
+
+    // After the loop, print block statistics
+    println!("\nBlock-wise Distribution:");
+    for (block, stats) in block_stats.iter() {
+        println!("Block #{}: {} transactions, Total Gas: {}, Our Gas: {} ({:.2}%)", 
+            block, 
+            stats.tx_count,
+            stats.total_gas_used,
+            stats.our_gas_used,
+            (stats.our_gas_used.as_u128() as f64 / stats.total_gas_used.as_u128() as f64) * 100.0
+        );
+    }
 
     let elapsed = start_time.elapsed();
     println!("\nTransaction Summary:");
@@ -1198,11 +1273,14 @@ async fn send_eth_burst(
         .open("eth-transfer-burst.log")?;
     let mut log = BufWriter::new(log_file);
 
+    // After creating log file, add block stats tracking
+    let mut block_stats: HashMap<U64, BlockStats> = HashMap::new();
+    let mut successful = 0;
+    let mut failed = 0;
+
     // Wait for all transaction receipts with timeout
     let max_wait = Duration::from_secs(60);
     let start_wait = Instant::now();
-    let mut successful = 0;
-    let mut failed = 0;
 
     while !transactions.is_empty() && start_wait.elapsed() < max_wait {
         debug!("Checking {} pending transactions...", transactions.len());
@@ -1213,16 +1291,70 @@ async fn send_eth_burst(
                 Some(receipt) => {
                     debug!("Got receipt for tx: {:#x}", tx_info.hash);
                     let block_num = receipt.block_number.unwrap_or_default();
+                    
+                    // Update block statistics
+                    let stats = block_stats.entry(block_num).or_insert(BlockStats {
+                        tx_count: 0,
+                        total_gas_used: U256::zero(),
+                        our_gas_used: U256::zero(),
+                    });
+                    stats.tx_count += 1;
+                    stats.our_gas_used += receipt.gas_used.unwrap_or_default();
+
+                    // Get block info for total gas used
+                    if let Ok(block) = client.get_block(block_num).await {
+                        if let Some(block) = block {
+                            stats.total_gas_used = block.gas_used;
+                        }
+                    }
+
                     if receipt.status.unwrap().as_u64() == 1 {
                         debug!("Transaction successful, writing to log...");
-                        writeln!(log, "success,{},{},{},{},{},0x{:?},0x{:?},{},{}",
+                        // Get message ID from logs more safely
+                        let message_id = if let Some(log) = receipt.logs.first() {
+                            // Create raw log for parsing
+                            let raw_log = RawLog {
+                                topics: log.topics.clone(),
+                                data: log.data.to_vec(),
+                            };
+
+                            // Create contract instance for event parsing
+                            let contract_json: Value = serde_json::from_slice(
+                                include_bytes!("../../../reth-contract/out/MonetSmartContract.sol/MonetSmartContract.json")
+                            )?;
+                            let abi: ethers::abi::Abi = serde_json::from_value(contract_json["abi"].clone())?;
+
+                            // Find and parse the event
+                            if let Some(event) = abi.events().find(|e| e.name == "ETHSentToDestinationChain") {
+                                if let Ok(parsed) = event.parse_log(raw_log) {
+                                    // Find messageId parameter
+                                    if let Some(param) = parsed.params.iter().find(|p| p.name == "messageId") {
+                                        if let Token::Uint(val) = &param.value {
+                                            val.as_u64()
+                                        } else {
+                                            0
+                                        }
+                                    } else {
+                                        0
+                                    }
+                                } else {
+                                    0
+                                }
+                            } else {
+                                0
+                            }
+                        } else {
+                            0
+                        };
+                        writeln!(log, "success,{},{},{},{},{},{},{},{},{},{}",
                             block_num,
+                            message_id,
                             format!("{:#x}", tx_info.hash),
                             1,
                             tx_info.from_chain,
                             tx_info.to_chain,
-                            tx_info.from_addr,
-                            tx_info.to_addr,
+                            format!("{:x}", tx_info.from_addr),
+                            format!("{:x}", tx_info.to_addr),
                             tx_info.amount,
                             SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()
                         )?;
@@ -1263,6 +1395,18 @@ async fn send_eth_burst(
     }
 
     log.flush()?;
+
+    // After the loop, print block statistics
+    println!("\nBlock-wise Distribution:");
+    for (block, stats) in block_stats.iter() {
+        println!("Block #{}: {} transactions, Total Gas: {}, Our Gas: {} ({:.2}%)", 
+            block, 
+            stats.tx_count,
+            stats.total_gas_used,
+            stats.our_gas_used,
+            (stats.our_gas_used.as_u128() as f64 / stats.total_gas_used.as_u128() as f64) * 100.0
+        );
+    }
 
     println!("\nTransaction Summary:");
     println!("Total transactions: {}", num_txs);
