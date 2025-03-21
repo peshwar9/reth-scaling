@@ -65,4 +65,4 @@ NODE3_RPC=http://34.48.205.25:8845
 # Proof verifier
 
 # Run with transaction hash
-RUST_LOG=debug cargo run --bin proof_verifier 0x06f3a614a727072fa42230a9fe6096a469840707badf020321691519bb02cf8f
+RUST_LOG=debug cargo run --bin proof_verifier 0xecb958bce76e051b58d5789c0edcb6f741cbad0e699006564d091371a38b7dbc

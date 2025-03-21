@@ -41,7 +41,7 @@ async fn main() -> Result<()> {
 
     // Get RPC URL from .env
     dotenv::dotenv().ok();
-    let rpc_url = env::var("NODE1_RPC")?;
+    let rpc_url = env::var("NODE5_RPC")?;
     let provider = Provider::<Http>::try_from(rpc_url)?;
     let client = Arc::new(provider);
 
@@ -68,29 +68,32 @@ async fn generate_proof(
     let chain_id = client.get_chainid().await?;
     println!("\nConnected to chain ID: {}", chain_id);
 
-    // Get the latest block to verify sync status
-    let latest_block = client.get_block_number().await?;
-    println!("Latest block: {}", latest_block);
-
+    // Get transaction receipt and block
     let receipt = client.get_transaction_receipt(tx_hash).await?
         .expect("Transaction not found");
-    
-    println!("\nTransaction receipt found:");
-    println!("Block number: {:?}", receipt.block_number);
-    println!("Number of logs: {}", receipt.logs.len());
-    println!("To address: {:?}", receipt.to);
-    println!("From address: {:?}", receipt.from);
-    println!("Status: {:?}", receipt.status);
-    println!("Gas used: {:?}", receipt.gas_used);
-
-    // Get block to verify we're not querying a pruned node
     let block = client.get_block(receipt.block_number.unwrap())
         .await?
         .expect("Block not found");
-    println!("\nBlock details:");
-    println!("Block time: {:?}", block.timestamp);
-    println!("Block hash: {:?}", block.hash);
-    println!("Parent hash: {:?}", block.parent_hash);
+
+    println!("\nTransaction Details:");
+    println!("Block: #{}", receipt.block_number.unwrap());
+    println!("Transaction index: {}", receipt.transaction_index);
+    println!("Contract called: {:?}", receipt.to.unwrap());
+    println!("State Root: {:?}", block.state_root);
+    println!("Receipts Root: {:?}", block.receipts_root);
+
+    // Get event details
+    let event_signature_str = "ETHSentToDestinationChain(uint32,address,address,uint32,uint256)";
+    let event_signature = H256::from(keccak256(event_signature_str.as_bytes()));
+    let event = receipt.logs.iter()
+        .find(|log| log.topics[0] == event_signature)
+        .expect("Cross-chain event not found");
+
+    println!("\nEvent Details:");
+    println!("Log Index: {}", event.log_index.unwrap());
+    println!("Event Topics: {:?}", event.topics);
+    println!("Event Data: 0x{}", hex::encode(&event.data));
+    println!("Event emitter: {:?}", event.address);
 
     // Try getting raw transaction data
     let tx = client.get_transaction(tx_hash).await?
@@ -135,9 +138,9 @@ async fn generate_proof(
     );
 
     // Get contract address from environment
-    let contract_addr = env::var("NODE1_CONTRACT")?
+    let contract_addr = env::var("NODE5_CONTRACT")?
         .parse::<Address>()
-        .expect("Invalid contract address in NODE1_CONTRACT");
+        .expect("Invalid contract address in CONTRACT");
     let tx_addr = receipt.to.unwrap();
     
     println!("\nContract addresses:");
@@ -170,7 +173,7 @@ async fn generate_proof(
     // Check if this is a private chain
     println!("\nChain info:");
     println!("Chain ID: {}", chain_id);
-    println!("Latest block: {}", latest_block);
+    println!("Latest block: {}", receipt.block_number.unwrap());
     println!("Block time: {}", block.timestamp);
 
     // Debug event signature calculation
@@ -191,9 +194,6 @@ async fn generate_proof(
     println!("  chainId (uint32): 0x{}", hex::encode(&tx.input[4..36]));
     println!("  recipient (address): 0x{}", hex::encode(&tx.input[36..68]));
 
-    let event = receipt.logs.iter()
-        .find(|log| log.topics[0] == event_signature)
-        .expect("Cross-chain event not found");
     let event_clone = event.clone();  // Clone for TransactionInfo
 
     let contract_addr = receipt.to.unwrap();
@@ -231,14 +231,18 @@ async fn generate_receipt_proof(
     receipt: &TransactionReceipt,
     block_number: u64,
 ) -> Result<EIP1186ProofResponse> {
+    // Calculate receipt key using transaction index
+    let mut key_bytes = vec![0u8; 32];
+    key_bytes[31] = receipt.transaction_index.as_u64() as u8;  // Use last byte for index
+    let receipt_key = H256::from_slice(&key_bytes);
+    
     let proof = client.get_proof(
         receipt.to.unwrap(),
-        vec![H256::from(keccak256(b"receipts"))],
+        vec![receipt_key],
         Some(block_number.into())
     ).await?;
 
-    println!("Receipt proof generated for tx index: {}", 
-        receipt.transaction_index.as_u64());  // Use as_u64() directly
+    println!("Receipt proof generated with key: 0x{:x}", receipt_key);
     Ok(proof)
 }
 
@@ -247,14 +251,18 @@ async fn generate_event_proof(
     event: &Log,
     block_number: u64,
 ) -> Result<EIP1186ProofResponse> {
+    // Calculate event key using log index
+    let mut key_bytes = vec![0u8; 32];
+    key_bytes[31] = event.log_index.unwrap().as_u64() as u8;  // Use last byte for index
+    let event_key = H256::from_slice(&key_bytes);
+    
     let proof = client.get_proof(
         event.address,
-        vec![H256::from(keccak256(&event.data.to_vec()))],
+        vec![event_key],
         Some(block_number.into())
     ).await?;
 
-    println!("Event proof generated for log index: {}", 
-        event.log_index.expect("No log index").as_u64());  // Fix: unwrap Option first
+    println!("Event proof generated with key: 0x{:x}", event_key);
     Ok(proof)
 }
 
@@ -274,6 +282,17 @@ async fn generate_state_proof(
 }
 
 fn verify_proof(proof: &CrossChainProof) -> Result<()> {
+    println!("\nDetailed proof verification:");
+    println!("Block roots:");
+    println!("  State root: {:?}", proof.block_roots.state_root);
+    println!("  Receipts root: {:?}", proof.block_roots.receipts_root);
+    
+    println!("\nTransaction details:");
+    println!("  Block number: {:?}", proof.transaction.receipt.block_number);
+    println!("  Transaction index: {:?}", proof.transaction.receipt.transaction_index);
+    println!("  Contract address: {:?}", proof.transaction.contract_addr);
+    println!("  Chain ID from event: {:?}", proof.transaction.chain_id);
+
     // Convert Vec<Bytes> to &[Bytes] for verification
     let receipt_proof_slice: &[Bytes] = &proof.receipt_proof.storage_proof[0].proof;
     let event_proof_slice: &[Bytes] = &proof.event_proof.storage_proof[0].proof;
