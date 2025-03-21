@@ -60,3 +60,9 @@ NODE2_RPC=http://34.48.132.251:8845
 NODE3_CHAINID=9014
 NODE3_CONTRACT=0x9a3f2c925021d158f968070295c4f3d67af596cd
 NODE3_RPC=http://34.48.205.25:8845
+
+
+# Proof verifier
+
+# Run with transaction hash
+RUST_LOG=debug cargo run --bin proof_verifier 0x06f3a614a727072fa42230a9fe6096a469840707badf020321691519bb02cf8f
