@@ -559,10 +559,9 @@ async fn send_eth_crosschain(
         println!("No transactions were sent successfully");
     }
 
-    // Collect block statistics
-    let mut block_stats: HashMap<U64, BlockStats> = HashMap::new();
-    let mut total_success = 0;
-    let mut total_failed = 0;
+    // After sending transactions, before receipt checking
+    println!("\nAll transactions sent. Checking receipts...");
+    println!("Number of transactions to check: {}", transactions.len());
 
     // Create log file
     let log_file = OpenOptions::new()
@@ -575,98 +574,71 @@ async fn send_eth_crosschain(
     // Wait for all transaction receipts with timeout
     let max_wait = Duration::from_secs(60); // Maximum wait time of 60 seconds
     let start_wait = Instant::now();
+    let mut successful = 0;
+    let mut failed = 0;
 
     while !transactions.is_empty() && start_wait.elapsed() < max_wait {
+        println!("\nChecking {} pending transactions...", transactions.len());
         let mut completed = Vec::new();
         
         for (idx, tx_info) in transactions.iter().enumerate() {
             match client.get_transaction_receipt(tx_info.hash).await? {
                 Some(receipt) => {
+                    println!("Got receipt for tx: {:#x}", tx_info.hash);
                     let block_num = receipt.block_number.unwrap_or_default();
-                    let status = if receipt.status.unwrap().as_u64() == 1 {
-                        total_success += 1;
-                        "success"
+                    if receipt.status.unwrap().as_u64() == 1 {
+                        println!("Transaction successful, writing to log...");
+                        writeln!(log, "success,{},{},{},{},{},0x{:?},0x{:?},{},{}",
+                            block_num,
+                            format!("{:#x}", tx_info.hash),
+                            1,
+                            tx_info.from_chain,
+                            tx_info.to_chain,
+                            tx_info.from_addr,
+                            tx_info.to_addr,
+                            tx_info.amount,
+                            SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()
+                        )?;
+                        successful += 1;
                     } else {
-                        total_failed += 1;
-                        "failed"
-                    };
-
-                    // Update block statistics
-                    let stats = block_stats.entry(block_num).or_insert(BlockStats {
-                        tx_count: 0,
-                        total_gas_used: U256::zero(),
-                        our_gas_used: U256::zero(),
-                    });
-                    stats.tx_count += 1;
-                    stats.our_gas_used += receipt.gas_used.unwrap_or_default();
-
-                    // Get block info for total gas used
-                    if let Ok(block) = client.get_block(block_num).await {
-                        if let Some(block) = block {
-                            stats.total_gas_used = block.gas_used;
-                        }
+                        println!("Transaction failed, writing to log...");
+                        writeln!(log, "failed,{},{},{},{},{},0x{:?},0x{:?},{},{}",
+                            block_num,
+                            format!("{:#x}", tx_info.hash),
+                            1,
+                            tx_info.from_chain,
+                            tx_info.to_chain,
+                            tx_info.from_addr,
+                            tx_info.to_addr,
+                            tx_info.amount,
+                            SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()
+                        )?;
+                        failed += 1;
                     }
-
-                    writeln!(log, "{},{},{},{:#x},{},{},{},{},{}",
-                        status,
-                        block_num,
-                        tx_info.round,
-                        tx_info.hash,
-                        tx_info.from_chain,
-                        tx_info.to_chain,
-                        tx_info.from_addr,
-                        tx_info.to_addr,
-                        tx_info.amount
-                    )?;
                     completed.push(idx);
                 }
                 None => {
-                    // Transaction still pending
+                    println!("No receipt yet for tx: {:#x}", tx_info.hash);
                     continue;
                 }
             }
         }
-
-        // Remove completed transactions from back to front
-        for idx in completed.iter().rev() {
-            transactions.remove(*idx);
-        }
-
+        
+        // After each iteration
         if !transactions.is_empty() {
+            println!("Waiting for {} more receipts...", transactions.len());
             sleep(Duration::from_secs(1)).await;
         }
     }
 
-    // After the timeout loop, log any remaining transactions as pending
-    for tx_info in transactions {
-        writeln!(log, "pending,0,{},{},{},{},0x{:?},0x{:?},{},{}",
-            format!("{:#x}", tx_info.hash),
-            1,
-            tx_info.from_chain,
-            tx_info.to_chain,
-            tx_info.from_addr,
-            tx_info.to_addr,
-            tx_info.amount,
-            SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()
-        )?;
-    }
     log.flush()?;
 
     let elapsed = start_time.elapsed();
     println!("\nTransaction Summary:");
     println!("Total transactions: {}", total_sent);
-    println!("Total success: {}", total_success);
-    println!("Total failures: {}", total_failed);
-    println!("\nBlock-wise Distribution:");
-    for (block, stats) in block_stats.iter() {
-        println!("Block #{}: {} transactions, Total Gas: {}, Our Gas: {} ({:.2}%)", 
-            block, 
-            stats.tx_count,
-            stats.total_gas_used,
-            stats.our_gas_used,
-            (stats.our_gas_used.as_u128() as f64 / stats.total_gas_used.as_u128() as f64) * 100.0
-        );
-    }
+    println!("Successful: {}", successful);
+    println!("Failed: {}", failed);
+    println!("Time taken: {:?}", elapsed);
 
     // Add verification
     if total_sent != expected_total {
@@ -1215,6 +1187,10 @@ async fn send_eth_burst(
         println!("No transactions were sent successfully");
     }
 
+    // After sending transactions
+    info!("All transactions sent. Checking receipts...");
+    debug!("Number of transactions to check: {}", transactions.len());
+
     // Create log file
     let log_file = OpenOptions::new()
         .create(true)
@@ -1229,13 +1205,16 @@ async fn send_eth_burst(
     let mut failed = 0;
 
     while !transactions.is_empty() && start_wait.elapsed() < max_wait {
+        debug!("Checking {} pending transactions...", transactions.len());
         let mut completed = Vec::new();
         
         for (idx, tx_info) in transactions.iter().enumerate() {
             match client.get_transaction_receipt(tx_info.hash).await? {
                 Some(receipt) => {
+                    debug!("Got receipt for tx: {:#x}", tx_info.hash);
                     let block_num = receipt.block_number.unwrap_or_default();
                     if receipt.status.unwrap().as_u64() == 1 {
+                        debug!("Transaction successful, writing to log...");
                         writeln!(log, "success,{},{},{},{},{},0x{:?},0x{:?},{},{}",
                             block_num,
                             format!("{:#x}", tx_info.hash),
@@ -1249,6 +1228,7 @@ async fn send_eth_burst(
                         )?;
                         successful += 1;
                     } else {
+                        warn!("Transaction failed: {:#x}", tx_info.hash);
                         writeln!(log, "failed,{},{},{},{},{},0x{:?},0x{:?},{},{}",
                             block_num,
                             format!("{:#x}", tx_info.hash),
@@ -1264,15 +1244,20 @@ async fn send_eth_burst(
                     }
                     completed.push(idx);
                 }
-                None => continue,
+                None => {
+                    debug!("No receipt yet for tx: {:#x}", tx_info.hash);
+                    continue;
+                }
             }
         }
-
+        
+        // Remove completed transactions
         for idx in completed.iter().rev() {
             transactions.remove(*idx);
         }
 
         if !transactions.is_empty() {
+            debug!("Waiting for {} more receipts...", transactions.len());
             sleep(Duration::from_secs(1)).await;
         }
     }

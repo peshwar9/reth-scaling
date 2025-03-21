@@ -20,10 +20,10 @@ async fn main() -> Result<()> {
     dotenv().ok();
     
     // Set up the provider using NODE1_RPC from env
-    let rpc_url = env::var("NODE1_RPC")
+    let rpc_url = env::var("NODE5_RPC")
         .expect("RPC_URL must be set in .env file");
 
-    let tx_hash = "0x13146aa5b7912e700723fdb2355c0f0e620394c0992da7a68a2e0517817036e8";
+    let tx_hash = "0x0c06a99bc5f7d8321c9d4589ca25b8bbbbc48ff46663e6173e96a94322053ade";
 
     // Create provider
     let provider = Provider::<Http>::try_from(rpc_url.clone())?;

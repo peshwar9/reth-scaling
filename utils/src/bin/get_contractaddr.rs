@@ -10,12 +10,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
     
     // Set up the provider using NODE1_RPC from env
-    let rpc_url = env::var("NODE1_RPC")
+    let rpc_url = env::var("NODE5_RPC")
         .expect("RPC_URL must be set in .env file");
     let provider = Provider::<Http>::try_from(rpc_url)?;
 
     // Transaction hash - convert from hex string to H256
-    let tx_hash = "0x3f2e6666c282713565fc41b679358dad74dbabb64fb006aed6ce1be9194b56e9"
+    let tx_hash = "0x4a71686eaa3482577d652a6ded7cf00a93e8dcf788d7207cc9bfeefd23ee28f4"
         .parse::<H256>()?;
 
     // Get the transaction receipt
