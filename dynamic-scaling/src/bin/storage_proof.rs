@@ -10,17 +10,17 @@ use std::env;
 #[derive(Debug)]
 struct CrossChainProof {
     // Transaction receipt proof
-    receipt_proof: Bytes,
+    receipt_proof: Vec<Bytes>,
     receipt_root: H256,
     tx_index: U256,
     
     // Event proof
-    event_proof: Bytes,
+    event_proof: Vec<Bytes>,
     event_root: H256,
     event_index: U256,
     
     // State proof for message ID
-    state_proof: Bytes,
+    state_proof: Vec<Bytes>,
     state_root: H256,
     message_id: U256,
 }
@@ -28,8 +28,8 @@ struct CrossChainProof {
 #[tokio::main]
 async fn main() -> Result<()> {
     // Get RPC URL and contract address from env
-    let rpc_url = env::var("SOURCE_RPC_URL")?;
-    let contract_addr = env::var("CONTRACT_ADDRESS")?
+    let rpc_url = env::var("NODE5_URL")?;
+    let contract_addr = env::var("NODE5_CONTRACT")?
         .parse::<Address>()?;
 
     // Connect to provider
@@ -93,30 +93,29 @@ async fn generate_proof(
     let message_id = U256::from_big_endian(&event.data.0[32..64]);
 
     Ok(CrossChainProof {
-        receipt_proof: receipt_proof.0,
+        receipt_proof,
         receipt_root: block.receipts_root,
-        tx_index: receipt.transaction_index.unwrap().into(),
+        tx_index: receipt.transaction_index.unwrap_or_default().as_u64().into(),
         
-        event_proof: event_proof.0,
+        event_proof,
         event_root: H256::from_slice(&keccak256(&receipt.logs_bloom.0)),
-        event_index: U256::from(event.log_index.unwrap().as_u64()),
+        event_index: event.log_index.unwrap_or_default().as_u64().into(),
         
-        state_proof: state_proof.0,
+        state_proof,
         state_root: block.state_root,
         message_id,
     })
 }
 
 async fn get_receipt_proof(
-    client: &Provider<Http>, 
+    client: &Provider<Http>,
     receipt: &TransactionReceipt,
     block: &Block<Transaction>,
-) -> Result<Bytes> {
-    // Get proof from node
+) -> Result<Vec<Bytes>> {
     let proof = client.get_proof(
         receipt.to.unwrap(),
         vec![H256::from_slice(&keccak256(b"receipts"))],
-        Some(block.number.unwrap())
+        Some(BlockId::Number(block.number.unwrap_or_default()))
     ).await?;
     
     Ok(proof.storage_proof[0].proof.clone())
@@ -126,12 +125,11 @@ async fn get_event_proof(
     client: &Provider<Http>,
     event: &Log,
     receipt: &TransactionReceipt,
-) -> Result<Bytes> {
-    // Get proof from node
+) -> Result<Vec<Bytes>> {
     let proof = client.get_proof(
         event.address,
         vec![H256::from_slice(&keccak256(&event.data.0))],
-        Some(receipt.block_number.unwrap())
+        Some(BlockId::Number(receipt.block_number.unwrap_or_default()))
     ).await?;
     
     Ok(proof.storage_proof[0].proof.clone())
@@ -142,12 +140,11 @@ async fn get_state_proof(
     contract: Address,
     slot: H256,
     block_number: U64,
-) -> Result<Bytes> {
-    // Get proof from node
+) -> Result<Vec<Bytes>> {
     let proof = client.get_proof(
         contract,
         vec![slot],
-        Some(block_number)
+        Some(BlockId::Number(block_number))
     ).await?;
     
     Ok(proof.storage_proof[0].proof.clone())
